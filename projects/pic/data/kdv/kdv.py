@@ -26,8 +26,8 @@ import scipy.io as scio
 
 def load_pretrained_PINN(ann_filename):
     try:
-        with open(ann_filename, 'rb') as data_input_file:
-            data_nn = pickle.load(data_input_file)
+        import torch
+        data_nn = torch.load(ann_filename, map_location=torch.device('cpu'))
     except FileNotFoundError:
         print('No model located, proceeding with ann approx. retraining.')
         data_nn = None
@@ -47,6 +47,9 @@ def compare_equations(correct_symbolic: str, eq_incorrect_symbolic: str,
     for var in all_vars:
         correct_eq.vals[var].main_var_to_explain = var
         correct_eq.vals[var].metaparameters = metaparams
+        correct_eq.vals[var].weights_internal = np.ones(len(correct_eq.vals[var].structure) - 1)
+        correct_eq.vals[var].weights_internal_evald = True
+        correct_eq.vals[var].weights_final_evald = True
     print(correct_eq.text_form)
 
     incorrect_eq = translate_equation(eq_incorrect_symbolic, search_obj.pool,
@@ -54,6 +57,9 @@ def compare_equations(correct_symbolic: str, eq_incorrect_symbolic: str,
     for var in all_vars:
         incorrect_eq.vals[var].main_var_to_explain = var
         incorrect_eq.vals[var].metaparameters = metaparams
+        incorrect_eq.vals[var].weights_internal = np.ones(len(correct_eq.vals[var].structure) - 1)
+        incorrect_eq.vals[var].weights_internal_evald = True
+        incorrect_eq.vals[var].weights_final_evald = True
     print(incorrect_eq.text_form)
 
     fit_operator.apply(correct_eq, {})
@@ -143,7 +149,7 @@ def KdV_test(operator: CompoundOperator, foldername: str, noise_level: int = 0):
     grid, data = kdv_data(os.path.join(foldername, 'data.csv'))
     # grid, data = kdv_data(os.path.join(foldername, 'Kdv.mat'))
     noised_data = noise_data(data, noise_level)
-    data_nn = load_pretrained_PINN(os.path.join(foldername, 'kdv_0_ann.pickle'))
+    data_nn = None #load_pretrained_PINN(os.path.join(foldername, 'kdv_0_ann.pickle'))
 
     print('Shapes:', data.shape, grid[0].shape)
     dimensionality = 1
@@ -153,7 +159,7 @@ def KdV_test(operator: CompoundOperator, foldername: str, noise_level: int = 0):
 
     epde_search_obj = EpdeSearch(use_solver = False, use_pic=True, boundary = 10,
                                  coordinate_tensors = (grid[0], grid[1]), verbose_params = {'show_iter_idx' : True},
-                                 device = 'cuda')
+                                 device = 'cuda' if torch.cuda.is_available() else 'cpu')
 
     custom_trigonometric_eval_fun = {
         'cos(t)sin(x)': lambda *grids, **kwargs: (np.cos(grids[0]) * np.sin(grids[1])) ** kwargs['power']}
@@ -200,7 +206,7 @@ def KdV_h_test(operator: CompoundOperator, foldername: str, noise_level: int = 0
 
     epde_search_obj = EpdeSearch(use_solver = False, use_pic=True, boundary = 20,
                                  coordinate_tensors = (grid[0], grid[1]), verbose_params = {'show_iter_idx' : True},
-                                 device = 'cuda')
+                                 device = 'cuda' if torch.cuda.is_available() else 'cpu')
 
     epde_search_obj.set_preprocessor(default_preprocessor_type='FD',
                                      preprocessor_kwargs={}) #'epochs_max': 5e4
@@ -232,7 +238,7 @@ def KdV_sga_test(operator: CompoundOperator, foldername: str, noise_level: int =
 
     epde_search_obj = EpdeSearch(use_solver = False, use_pic=True, boundary = 10,
                                  coordinate_tensors = (grid[0], grid[1]), verbose_params = {'show_iter_idx' : True},
-                                 device = 'cuda')
+                                 device = 'cuda' if torch.cuda.is_available() else 'cpu')
 
     epde_search_obj.set_preprocessor(default_preprocessor_type='FD',
                                      preprocessor_kwargs={}) #'epochs_max': 5e4
@@ -254,7 +260,7 @@ def kdv_discovery(foldername, noise_level):
 
     epde_search_obj = EpdeSearch(use_solver=False, use_pic=True,
                                       boundary=5,
-                                      coordinate_tensors=grid, device='cuda')
+                                      coordinate_tensors=grid, device='cuda' if torch.cuda.is_available() else 'cpu')
 
     # epde_search_obj.set_preprocessor(default_preprocessor_type='ANN',
     #                                     preprocessor_kwargs={'epochs_max' : 1e3})
@@ -307,7 +313,7 @@ def kdv_h_discovery(foldername, noise_level):
 
     epde_search_obj = EpdeSearch(use_solver=False, use_pic=True,
                                       boundary=20,
-                                      coordinate_tensors=grid, device='cuda')
+                                      coordinate_tensors=grid, device='cuda' if torch.cuda.is_available() else 'cpu')
 
     # epde_search_obj.set_preprocessor(default_preprocessor_type='ANN',
     #                                     preprocessor_kwargs={'epochs_max' : 1e3})
@@ -363,7 +369,7 @@ def kdv_sga_discovery(foldername, noise_level):
 
     epde_search_obj = EpdeSearch(use_solver=False, use_pic=True,
                                       boundary=20,
-                                      coordinate_tensors=grid, device='cuda')
+                                      coordinate_tensors=grid, device='cuda' if torch.cuda.is_available() else 'cpu')
 
     epde_search_obj.set_preprocessor(default_preprocessor_type='ANN',
                                         preprocessor_kwargs={'epochs_max' : 1e3})
@@ -421,7 +427,7 @@ def kdv_sindy_discovery(foldername, noise_level):
 
     epde_search_obj = EpdeSearch(use_solver=False, use_pic=True,
                                       boundary=(40, 100),
-                                      coordinate_tensors=grid, device='cuda')
+                                      coordinate_tensors=grid, device='cuda' if torch.cuda.is_available() else 'cpu')
 
     # epde_search_obj.set_preprocessor(default_preprocessor_type='ANN',
     #                                     preprocessor_kwargs={'epochs_max' : 1e3})
@@ -470,8 +476,8 @@ if __name__ == "__main__":
     from epde.operators.utils.default_parameter_loader import EvolutionaryParams
     print("CUDA available:", torch.cuda.is_available())
     # Operator = fitness.SolverBasedFitness # Replace by the developed PIC-based operator.
-    # Operator = fitness.PIC
-    Operator = fitness.L2LRFitness
+    Operator = fitness.PIC
+    # Operator = fitness.L2LRFitness
     params = EvolutionaryParams()
     operator_params = params.get_default_params_for_operator('DiscrepancyBasedFitnessWithCV') #{"penalty_coeff": 0.2, "pinn_loss_mult": 1e4}
     # operator_params = {"penalty_coeff": 0.2, "pinn_loss_mult": 1e4}
@@ -482,11 +488,11 @@ if __name__ == "__main__":
     directory = os.path.dirname(os.path.realpath(__file__))
     kdv_folder_name = os.path.join(directory)
 
-    # KdV_test(fit_operator, kdv_folder_name, 0)
+    KdV_test(fit_operator, kdv_folder_name, 0)
     # KdV_h_test(fit_operator, kdv_folder_name, 0)
     # KdV_sga_test(fit_operator, kdv_folder_name, 0)
 
     # kdv_discovery(kdv_folder_name, 0)
     # kdv_h_discovery(kdv_folder_name, 0)
     # kdv_sga_discovery(kdv_folder_name, 5)
-    kdv_sindy_discovery(kdv_folder_name, 0)
+    # kdv_sindy_discovery(kdv_folder_name, 0)

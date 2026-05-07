@@ -78,15 +78,13 @@ def prepare_suboperators(fitness_operator: CompoundOperator, operator_params: di
     sparsity = LASSOSparsity()
     coeff_calc = LinRegBasedCoeffsEquation()
 
-    # sparsity = map_operator_between_levels(sparsity, 'gene level', 'chromosome level')
-    # coeff_calc = map_operator_between_levels(coeff_calc, 'gene level', 'chromosome level')
-
-    fitness_operator.set_suboperators({'sparsity': sparsity,
-                                       'coeff_calc': coeff_calc})
-    fitness_cond = lambda x: not getattr(x, 'fitness_calculated')
+    fitness_operator.set_suboperators({'sparsity': sparsity, 'coeff_calc': coeff_calc})
     fitness_operator.params = operator_params
-    fitness_operator = map_operator_between_levels(fitness_operator, 'gene level', 'chromosome level',
-                                                   objective_condition=fitness_cond)
+
+    if 'chromosome level' not in fitness_operator._tags:
+        fitness_cond = lambda x: not getattr(x, 'fitness_calculated')
+        fitness_operator = map_operator_between_levels(fitness_operator, 'gene level', 'chromosome level',
+                                                       objective_condition=fitness_cond)
     return fitness_operator
 
 def ac_data(filename: str):
@@ -97,6 +95,14 @@ def ac_data(filename: str):
     grids = np.meshgrid(t, x, indexing = 'ij')  # np.stack(, axis = 2) , axis = 2)
     return grids, data
 
+
+def get_pic_network_summary(operator):
+    if operator.adapter is None or operator.adapter.net is None:
+        return None
+    net = operator.adapter.net
+    total_params = sum(p.numel() for p in net.parameters())
+    layers = [str(layer) for layer in net.layers] if hasattr(net, 'layers') else []
+    return {'total_parameters': total_params, 'layers': layers}
 
 def AC_test(operator: CompoundOperator, foldername: str, noise_level: int = 0):
     # Test scenario to evaluate performance on Allen-Cahn equation
@@ -172,40 +178,45 @@ def ac_discovery(foldername, noise_level):
 if __name__ == "__main__":
     import torch
     from epde.operators.utils.default_parameter_loader import EvolutionaryParams
+    global_var.solution_guess_nn = None
     print(torch.cuda.is_available())
     print(f"CUDA version linked with PyTorch: {torch.version.cuda}")
     # Operator = fitness.SolverBasedFitness # Replace by the developed PIC-based operator.
-    # Operator = fitness.PIC
-    #Operator = fitness.L2LRFitness
-    Operator = fitness.DeepXDEBasedFitness
+    #Operator = fitness.PIC
+    Operator = fitness.L2LRFitness
+    #Operator = fitness.DeepXDEBasedFitness
     params = EvolutionaryParams()
-    #operator_params = params.get_default_params_for_operator('DiscrepancyBasedFitnessWithCV') #{"penalty_coeff": 0.2, "pinn_loss_mult": 1e4}
-    try:
-        operator_params = params.get_default_params_for_operator('DeepXDEBasedFitness')
-    except Exception as e:
-        print(f"Предупреждение: не удалось загрузить параметры для DeepXDEBasedFitness: {e}")
-        print("Использую ручную конфигурацию.")
-        operator_params = {
-            "deepxde_config": {
-                "net": [50, 50, 50],
-                "activation": "tanh",
-                "optimizer": "adam",
-                "lr": 1e-3,
-                "num_domain": 1000,
-                "num_boundary": 200,
-                "num_initial": 200,
-                "iterations": 2
-            },
-            "penalty_coeff": 0.2,
-            "error_metric": "rmse"
-        }
+    operator_params = params.get_default_params_for_operator('DiscrepancyBasedFitnessWithCV') #{"penalty_coeff": 0.2, "pinn_loss_mult": 1e4}
+    #operator_params = params.get_default_params_for_operator('PIC')
+
+    # try:
+    #     operator_params = params.get_default_params_for_operator('DeepXDEBasedFitness')
+    # except Exception as e:
+    #     print(f"Предупреждение: не удалось загрузить параметры для DeepXDEBasedFitness: {e}")
+    #     print("Использую ручную конфигурацию.")
+    #     operator_params = {
+    #         "deepxde_config": {
+    #             "net": [50, 50, 50],
+    #             "activation": "tanh",
+    #             "optimizer": "adam",
+    #             "lr": 1e-3,
+    #             "num_domain": 1000,
+    #             "num_boundary": 200,
+    #             "num_initial": 200,
+    #             "iterations": 2
+    #         },
+    #         "penalty_coeff": 0.2,
+    #         "error_metric": "rmse"
+    #     }
 
     print('operator_params ', operator_params)
+
     fit_operator = prepare_suboperators(Operator(list(operator_params.keys())), operator_params)
+    #get_pic_network_summary(fit_operator)
 
     # Paths
     directory = os.path.dirname(os.path.realpath(__file__))
     ac_folder_name = os.path.join(directory)
 
-    #AC_test(fit_operator, ac_folder_name, 0)
-    ac_discovery(ac_folder_name, 0)
+    AC_test(fit_operator, ac_folder_name, 0)
+    # ac_discovery(ac_folder_name, 0)

@@ -47,7 +47,9 @@ def compare_equations(correct_symbolic: str, eq_incorrect_symbolic: str,
     for var in all_vars:
         correct_eq.vals[var].main_var_to_explain = var
         correct_eq.vals[var].metaparameters = metaparams
-        correct_eq.vals[var].simplified = True
+        correct_eq.vals[var].weights_internal = np.ones(len(correct_eq.vals[var].structure) - 1)
+        correct_eq.vals[var].weights_internal_evald = True
+        correct_eq.vals[var].weights_final_evald = True
     print(correct_eq.text_form)
 
     incorrect_eq = translate_equation(eq_incorrect_symbolic, search_obj.pool,
@@ -55,7 +57,9 @@ def compare_equations(correct_symbolic: str, eq_incorrect_symbolic: str,
     for var in all_vars:
         incorrect_eq.vals[var].main_var_to_explain = var
         incorrect_eq.vals[var].metaparameters = metaparams
-        incorrect_eq.vals[var].simplified = True
+        incorrect_eq.vals[var].weights_internal = np.ones(len(incorrect_eq.vals[var].structure) - 1)
+        incorrect_eq.vals[var].weights_internal_evald = True
+        incorrect_eq.vals[var].weights_final_evald = True
     print(incorrect_eq.text_form)
 
     fit_operator.apply(correct_eq, {})
@@ -193,5 +197,5 @@ if __name__ == "__main__":
     directory = os.path.dirname(os.path.realpath(__file__))
     wave_folder_name = os.path.join(directory)
 
-    # wave_test(fit_operator, wave_folder_name, 0)
-    wave_discovery(wave_folder_name, 0)
+    wave_test(fit_operator, wave_folder_name, 0)
+    # wave_discovery(wave_folder_name, 0)

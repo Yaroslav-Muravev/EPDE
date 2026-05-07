@@ -135,4 +135,4 @@ if __name__ == "__main__":
     print('operator_params ', operator_params)
     fit_operator = prepare_suboperators(Operator(list(operator_params.keys())), operator_params)
 
-    lv_discovery(0)
+    #lv_discovery(0)

@@ -7,6 +7,9 @@ import pickle
 from typing import Tuple, List
 import numpy as np
 
+import copy
+from epde.interface.token_family import TFPool
+from epde.structure.main_structures import SoEq, Chromosome
 from epde.interface.prepared_tokens import CustomTokens, PhasedSine1DTokens, ConstantToken, CustomEvaluator
 from epde.interface.equation_translator import translate_equation
 from epde.interface.interface import EpdeSearch
@@ -71,6 +74,81 @@ def compare_equations(correct_symbolic: str, eq_incorrect_symbolic: str,
     return all([correct_eq.vals[var].coefficients_stability < incorrect_eq.vals[var].coefficients_stability for var in
                 all_vars])
 
+def create_equation_from_str(eq_str, target_var, base_pool, all_vars):
+    # Отладочная информация
+    print(f"\n[DEBUG] target_var = {target_var}, eq_str = {eq_str}")
+    print("[DEBUG] Families in pool:")
+    for fam in base_pool.families:
+        var_name = getattr(fam, 'variable', None)
+        tokens = getattr(fam, 'tokens', [])
+        print(f"  variable={var_name}, tokens={tokens}, demands_equation={fam.status.get('demands_equation', False)}")
+
+    # Сохраняем оригинальные состояния demands_equation для семейств других переменных
+    original_states = {}
+    for fam in base_pool.families:
+        if hasattr(fam, 'variable') and fam.variable is not None and fam.variable != target_var:
+            original_states[fam] = fam.status.get('demands_equation', False)
+            fam.status['demands_equation'] = False
+    try:
+        soeq = translate_equation(eq_str, base_pool, all_vars=[target_var])
+        eq = soeq.vals[target_var]
+    except Exception as e:
+        print(f"[DEBUG] Translation failed: {e}")
+        raise
+    finally:
+        for fam, state in original_states.items():
+            fam.status['demands_equation'] = state
+    return eq
+
+def compare_systems(correct_symbolic_list, incorrect_symbolic_list, search_obj, all_vars, fit_operator):
+    metaparams = {('sparsity', var): {'optimizable': False, 'value': 1E-6} for var in all_vars}
+
+    correct_eqs = {}
+    for var, eq_str in zip(all_vars, correct_symbolic_list):
+        eq = create_equation_from_str(eq_str, var, search_obj.pool, all_vars)
+        eq.main_var_to_explain = var
+        eq.metaparameters = metaparams
+        eq.weights_internal = np.ones(len(eq.structure) - 1)
+        eq.weights_internal_evald = True
+        eq.weights_final_evald = True
+        correct_eqs[var] = eq
+
+    correct_system = SoEq(search_obj.pool, metaparams)
+    correct_system.vals = Chromosome(correct_eqs, {})
+    correct_system.moeadd_set = True
+    print("Correct system:")
+    print(correct_system.text_form)
+
+    incorrect_eqs = {}
+    for var, eq_str in zip(all_vars, incorrect_symbolic_list):
+        eq = create_equation_from_str(eq_str, var, search_obj.pool, all_vars)
+        eq.main_var_to_explain = var
+        eq.metaparameters = metaparams
+        eq.weights_internal = np.ones(len(eq.structure) - 1)
+        eq.weights_internal_evald = True
+        eq.weights_final_evald = True
+        incorrect_eqs[var] = eq
+
+    incorrect_system = SoEq(search_obj.pool, metaparams)
+    incorrect_system.vals = Chromosome(incorrect_eqs, {})
+    incorrect_system.moeadd_set = True
+    print("Incorrect system:")
+    print(incorrect_system.text_form)
+
+    fit_operator.apply(correct_system, {})
+    fit_operator.apply(incorrect_system, {})
+
+    correct_stability = [correct_system.vals[var].coefficients_stability for var in all_vars]
+    incorrect_stability = [incorrect_system.vals[var].coefficients_stability for var in all_vars]
+    print("Correct stability:", correct_stability)
+    print("Incorrect stability:", incorrect_stability)
+
+    correct_fitness = [correct_system.vals[var].fitness_value for var in all_vars]
+    incorrect_fitness = [incorrect_system.vals[var].fitness_value for var in all_vars]
+    print("Correct fitness:", correct_fitness)
+    print("Incorrect fitness:", incorrect_fitness)
+
+    return all(cs < incs for cs, incs in zip(correct_stability, incorrect_stability))
 
 def prepare_suboperators(fitness_operator: CompoundOperator, operator_params: dict) -> CompoundOperator:
     sparsity = LASSOSparsity()
@@ -113,10 +191,21 @@ def ns_data(filename: str):
 
 
 def ns_test(operator: CompoundOperator, foldername: str, noise_level: int = 0):
-    # Test scenario to evaluate performance on Allen-Cahn equation
-    eq_ac_symbolic = '0.0001 * d^2u/dx1^2{power: 1.0} + -5.0 * u{power: 3.0} + 5.0 * u{power: 1.0} + 0.0 = du/dx0{power: 1.0}'
-    eq_ac_incorrect = '4.976781518840499 * u{power: 1.0} + 0.0001 * d^2u/dx1^2{power: 1.0} + -4.974425220166616 * u{power: 3.0} + 0.0 * du/dx1{power: 1.0} * d^2u/dx0^2{power: 1.0} + 0.002262543822130977 = du/dx0{power: 1.0}'
+    # Базовые строки для переменной u
+    eq_u_correct = '0.0001 * d^2u/dx1^2{power: 1.0} + -5.0 * u{power: 3.0} + 5.0 * u{power: 1.0} + 0.0 = du/dx0{power: 1.0}'
+    eq_u_incorrect = '4.976781518840499 * u{power: 1.0} + 0.0001 * d^2u/dx1^2{power: 1.0} + -4.974425220166616 * u{power: 3.0} + 0.0 * du/dx1{power: 1.0} * d^2u/dx0^2{power: 1.0} + 0.002262543822130977 = du/dx0{power: 1.0}'
 
+    # Для v и p – заменяем u на v/p и производные соответственно
+    def replace_var(s, old, new):
+        return s.replace(f'u', new).replace(f'du/dx0', f'd{new}/dx0').replace(f'd^2u/dx1^2', f'd^2{new}/dx1^2')
+
+    eq_v_correct = replace_var(eq_u_correct, 'u', 'v')
+    eq_v_incorrect = replace_var(eq_u_incorrect, 'u', 'v')
+    eq_p_correct = replace_var(eq_u_correct, 'u', 'p')
+    eq_p_incorrect = replace_var(eq_u_incorrect, 'u', 'p')
+
+    correct_system = [eq_u_correct, eq_v_correct, eq_p_correct]
+    incorrect_system = [eq_u_incorrect, eq_v_incorrect, eq_p_incorrect]
     grid, data = ns_data(os.path.join(foldername, 'cylinder_nektar_wake.mat'))
     # noised_data = noise_data(data, noise_level)
     # data_nn = load_pretrained_PINN(os.path.join(foldername, 'ac_ann_pretrained.pickle'))
@@ -131,10 +220,11 @@ def ns_test(operator: CompoundOperator, foldername: str, noise_level: int = 0):
     epde_search_obj.set_preprocessor(default_preprocessor_type='FD',
                                      preprocessor_kwargs={})
 
-    epde_search_obj.create_pool(data=data, variable_names=["u", "v", "p"], max_deriv_order=(1, 2, 2),
+    epde_search_obj.create_pool(data=data, variable_names=["u", "v", "p"], max_deriv_order=(2, 2, 2),
                                 additional_tokens=[])#, data_nn=data_nn
 
-    assert compare_equations([eq_ac_symbolic] * 3, [eq_ac_incorrect] * 3, epde_search_obj)
+    assert compare_systems(correct_system, incorrect_system, epde_search_obj, all_vars=['u', 'v', 'p'],
+                           fit_operator=fit_operator)
 
 
 def ns_discovery(foldername, noise_level):
@@ -199,5 +289,5 @@ if __name__ == "__main__":
     directory = os.path.dirname(os.path.realpath(__file__))
     ns_folder_name = os.path.join(directory)
 
-    # ns_test(fit_operator, ns_folder_name, 0)
-    ns_discovery(ns_folder_name, 0)
+    ns_test(fit_operator, ns_folder_name, 0)
+    # ns_discovery(ns_folder_name, 0)
