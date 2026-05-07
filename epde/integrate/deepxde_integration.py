@@ -9,6 +9,8 @@ import epde.globals as global_var
 import deepxde as dde
 from abc import ABC, abstractmethod
 
+os.makedirs(os.path.expanduser('~/.deepxde'), exist_ok=True)
+
 class SolverStrategy(ABC):
     @abstractmethod
     def solve(self, eq_list: List[Equation], var_names: List[str],

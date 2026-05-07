@@ -31,7 +31,7 @@ ALL_CASES = [
 
 @pytest.mark.functional
 @pytest.mark.parametrize("operator_name, params", ALL_CASES)
-def test_ks(operator_name, params, runtime_options):
+def test_lorenz(operator_name, params, runtime_options):
     import epde.globals as global_var
     global_var.solution_guess_nn = None
     if operator_name not in runtime_options["operators"]:
