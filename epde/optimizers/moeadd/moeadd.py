@@ -106,13 +106,15 @@ def marriageSolutionAssignment(weights: np.ndarray, solutions: List[MOEADDSoluti
                     w_preferences[i] = np.roll(w_preferences[i], shift = -1, axis = 0)
                     w_preferences[i, -1] = -1
 
-    print('acute_angles\n', acute_angles)
-    print('matches\n', matches)
+    if global_var.verbose.show_iter_idx:
+        print('acute_angles\n', acute_angles)
+        print('matches\n', matches)
 
     checkWeightAssignmentUniqueness(matches)
     for sol_idx, solution in enumerate(solutions):
         weight_idx = np.where(matches[:, sol_idx] == 1)[0][0]
-        print(f'Assigned weight {weight_idx} for {sol_idx}')
+        if global_var.verbose.show_iter_idx:
+            print(f'Assigned weight {weight_idx} for {sol_idx}')
         solution.set_domain(weight_idx)
 
 
@@ -251,11 +253,11 @@ class ParetoLevels(object):
         """
         new_levels = []
         population_cleared = []
-        point_system = point.terms_labels
+        point_system = point.equations_labels
         for level in self.levels:
             temp = []
             for element in level:
-                if element.terms_labels != point_system:
+                if element.equations_labels != point_system:
                     temp.append(element)
                     population_cleared.append(element)
             if not len(temp) == 0:
@@ -301,7 +303,10 @@ class ParetoLevels(object):
 
     def set_weights(self, weights):
         if weights is None:
-            print(f'Setting ParetoLevels attribule weights with None: this should be a placeholder, expect futher logs.')
+            warnings.warn(
+                "Setting ParetoLevels.weights to None: this should be a placeholder; "
+                "expect further logs."
+            )
         #if neccessary, implement additional logic into setter
         self._weights = weights
 
@@ -466,6 +471,10 @@ class MOEADDOptimizer(object):
 
         self.best_obj = best_sol_vals
         self._hist = []
+        # Per-epoch Pareto-level-0 snapshots populated during ``optimize``.
+        # Each entry is a list of ``{'text_form', 'obj_fun'}`` dicts -- one
+        # per solution on the non-dominated front at the end of that epoch.
+        self._pareto_history = []
 
     def abbreviated_search(self, population, sorting_method, update_method):
         """
@@ -574,7 +583,8 @@ class MOEADDOptimizer(object):
             None
         """
         if len(self.pareto_levels.population) != 0:
-            print('comparing lengths', len(args), len(self.pareto_levels.population[0].obj_funs))
+            if global_var.verbose.show_iter_idx:
+                print('comparing lengths', len(args), len(self.pareto_levels.population[0].obj_funs))
             assert len(args) == len(self.pareto_levels.population[0].obj_funs)
             self.best_obj = np.empty(len(self.pareto_levels.population[0].obj_funs))
         elif len(self.pareto_levels.unplaced_candidates) != 0:
@@ -600,19 +610,25 @@ class MOEADDOptimizer(object):
         builder.assemble(True)
         self.set_sector_processer(builder.processer)
     
-    def optimize(self, epochs):
+    def optimize(self, epochs, early_stopping_callback=None):
         """
-        Method for the main unconstrained evolutionary optimization. Can be applied repeatedly to 
-        the population, if the previous results are insufficient. The output of the 
-        optimization shall be accessed with the ``optimizer.pareto_level`` object and 
+        Method for the main unconstrained evolutionary optimization. Can be applied repeatedly to
+        the population, if the previous results are insufficient. The output of the
+        optimization shall be accessed with the ``optimizer.pareto_level`` object and
         its attributes ``.levels`` or ``.population``.
-        
-        Args:        
+
+        Args:
             epochs (`int`): Maximum number of iterations, during that the optimization will be held.
-        
+            early_stopping_callback (`callable`, optional): hook invoked at the end of every
+                epoch with ``(snapshot, epoch_idx)`` where ``snapshot`` is the list of
+                ``{'text_form': ..., 'obj_fun': ...}`` dicts for the current Pareto level 0.
+                Returning a truthy value terminates the optimization. Use this to plug in
+                domain-specific stop conditions (e.g. thesis runs that already match a known
+                ground-truth structure). Default ``None`` runs the full ``epochs`` budget.
+
         Note:
             that if the algorithm converges to a single Pareto frontier, the optimization is stopped.
-        
+
         """
         if not self.abbreviated_search_executed:
             self.hist = []
@@ -622,18 +638,42 @@ class MOEADDOptimizer(object):
                     print(f'Multiobjective optimization : {epoch_idx}-th epoch.')
                 for weight_idx in np.arange(len(self.weights)):
                     if global_var.verbose.show_iter_idx:
-                        print(f'During MO : processing {weight_idx}-th weight.')                    
+                        print(f'During MO : processing {weight_idx}-th weight.')
                     sp_kwargs = self.form_processer_args(weight_idx)
-                    self.sector_processer.run(population_subset = self.pareto_levels, 
+                    self.sector_processer.run(population_subset = self.pareto_levels,
                                               EA_kwargs = sp_kwargs)
                 stats = self.pareto_levels.get_stats()
                 self._hist.append(stats)
+                # Snapshot the current Pareto-0 structures so consumers can
+                # ask "in which epoch was equation X first discovered?".
+                snapshot = []
+                for sol in self.pareto_levels.levels[0]:
+                    try:
+                        obj = sol.obj_fun.tolist() if hasattr(sol.obj_fun, 'tolist') else list(sol.obj_fun)
+                    except Exception:
+                        obj = None
+                    snapshot.append({'text_form': sol.text_form, 'obj_fun': obj})
+                self._pareto_history.append(snapshot)
                 if global_var.verbose.iter_fitness:
                     print(f'\n--- Dominating Pareto front (epoch {epoch_idx}) ---')
                     for sol_idx, solution in enumerate(self.pareto_levels.levels[0]):
                         print(f'  [{sol_idx}] obj_fun = {solution.obj_fun}')
                         print(f'       {solution.text_form}')
-                    print('---')    
+                    print('---')
+
+                if early_stopping_callback is not None:
+                    try:
+                        should_stop = bool(early_stopping_callback(snapshot, int(epoch_idx)))
+                    except Exception as exc:
+                        # A misbehaving callback must not abort the run; log
+                        # and keep going so the user still gets a result.
+                        print(f'[early_stopping_callback] raised {exc!r}; ignoring.')
+                        should_stop = False
+                    if should_stop:
+                        if global_var.verbose.show_iter_idx:
+                            print(f'Early stopping at epoch {int(epoch_idx) + 1}/'
+                                  f'{int(epochs)} (callback returned True).')
+                        break
 
     def form_processer_args(self, cur_weight : int): # TODO: inspect the most convenient input format
         """

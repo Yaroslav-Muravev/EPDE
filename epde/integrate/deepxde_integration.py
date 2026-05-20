@@ -261,6 +261,7 @@ class DeepXDEAdapter:
         self.num_boundary = int(self.config.get('num_boundary', 500))
         self.num_initial = int(self.config.get('num_initial', 500))
         self.epochs = int(self.config.get('epochs', 10000))
+        # self.iterations = int(self.config.get('epochs', 5))
         self.bc_type = self.config.get('bc_type', 'Dirichlet')
         self.fallback_bc_value = self.config.get('fallback_bc_value', 0.0)
 

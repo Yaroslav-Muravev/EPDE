@@ -1,0 +1,6 @@
+# Lotka-Volterra (coupled 2D ODE)
+# Generated with alpha=2/3, beta=4/3, delta=1, gamma=1.
+name: lv
+truth_equations:
+  - "0.6666666666666666 * u{power: 1.0} + -1.3333333333333333 * u{power: 1.0} * v{power: 1.0} = du/dx0{power: 1.0}"
+  - "1.0 * u{power: 1.0} * v{power: 1.0} + -1.0 * v{power: 1.0} = dv/dx0{power: 1.0}"

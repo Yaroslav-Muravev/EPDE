@@ -1,0 +1,6 @@
+# Kuramoto-Sivashinsky (1+1D PDE)
+#   du/dx0 = -u*du/dx1 - d^2u/dx1^2 - d^4u/dx1^4
+# Data: kuramoto_sivishinky.mat
+name: ks
+truth_equations:
+  - "-1.0 * u{power: 1.0} * du/dx1{power: 1.0} + -1.0 * d^2u/dx1^2{power: 1.0} + -1.0 * d^4u/dx1^4{power: 1.0} = du/dx0{power: 1.0}"

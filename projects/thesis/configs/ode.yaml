@@ -1,0 +1,6 @@
+# Forced Damped Oscillator (scalar ODE)
+#   u'' + sin(2t)*u' + 4*u = 1.5*t
+# i.e. d^2u/dx0^2 = -4*u - sin(2t)*du/dx0 + 1.5*t
+name: ode
+truth_equations:
+  - "-4.0 * u{power: 1.0} + -1.0 * du/dx0{power: 1.0} * sin{power: 1.0, freq: 2.0, dim: 0.0} + 1.5 * x_0{power: 1.0, dim: 0.0} = d^2u/dx0^2{power: 1.0}"

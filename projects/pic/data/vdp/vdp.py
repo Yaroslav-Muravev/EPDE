@@ -207,5 +207,5 @@ if __name__ == "__main__":
 
     vdp_folder_name = os.path.join(directory)
 
-    VdP_test(fit_operator, vdp_folder_name, 0)
-    #vdp_discovery(vdp_folder_name, 0)
+    # VdP_test(fit_operator, vdp_folder_name, 0)
+    vdp_discovery(vdp_folder_name, 0)

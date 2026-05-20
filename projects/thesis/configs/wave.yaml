@@ -1,0 +1,6 @@
+# Wave equation (1+1D PDE; wave speed^2 = 0.04, c = 0.2)
+#   d^2u/dx0^2 = 0.04 * d^2u/dx1^2
+# Data: wave_sln_80.csv
+name: wave
+truth_equations:
+  - "0.04 * d^2u/dx1^2{power: 1.0} = d^2u/dx0^2{power: 1.0}"

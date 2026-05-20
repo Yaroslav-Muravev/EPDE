@@ -1,0 +1,6 @@
+# Compound PDE (synthetic 1+1D PDE)
+#   du/dx0 = (du/dx1)^2 + d^2u/dx1^2 * u
+# Data: PDE_compound.npy
+name: pde_compound
+truth_equations:
+  - "1.0 * du/dx1{power: 2.0} + 1.0 * d^2u/dx1^2{power: 1.0} * u{power: 1.0} = du/dx0{power: 1.0}"

@@ -1,0 +1,6 @@
+# Burgers inviscid (1+1D PDE)
+#   du/dx0 = -u * du/dx1
+# Data: burgers_sln_100.csv (same CSV used by ``burgers_discovery``).
+name: burgers_inviscid
+truth_equations:
+  - "-1.0 * u{power: 1.0} * du/dx1{power: 1.0} = du/dx0{power: 1.0}"

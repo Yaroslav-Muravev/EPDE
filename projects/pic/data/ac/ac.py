@@ -116,9 +116,9 @@ def AC_test(operator: CompoundOperator, foldername: str, noise_level: int = 0):
     print('Shapes:', data.shape, grid[0].shape)
     dimensionality = 1
 
-    epde_search_obj = EpdeSearch(use_solver=False, use_pic=True, boundary=(5, 12),
+    epde_search_obj = EpdeSearch(use_solver=True, use_pic=True, boundary=(5, 12),
                                  coordinate_tensors=((grid[0], grid[1])), verbose_params={'show_iter_idx': True},
-                                 device='cpu')
+                                 device='cuda')
 
     epde_search_obj.set_preprocessor(default_preprocessor_type='FD',
                                      preprocessor_kwargs={})

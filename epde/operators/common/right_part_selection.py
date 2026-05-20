@@ -42,24 +42,49 @@ class EqRightPartSelector(CompoundOperator):
     '''    
     key = 'FitnessCheckingRightPartSelector'
 
-    @HistoryExtender('\n -> The equation structure was detected: ', 'a')        
+    @HistoryExtender('\n -> The equation structure was detected: ', 'a')
     def apply(self, objective : Equation, arguments : dict):
         self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
 
-        assert len(objective.structure) == len(objective.terms_labels)
+        # Duplicate-term detection: a frozenset of per-term factor signatures
+        # has the same length as ``structure`` iff every term is distinct.
+        # Comparing against ``terms_labels`` here would be dimensionally wrong
+        # (see the same family of bugs fixed in ``enforce_rps_uniqueness`` and
+        # ``simplify_equation``).
+        signatures = {term.factors_labels for term in objective.structure}
+        assert len(signatures) == len(objective.structure), \
+            'Equation has duplicate terms; randomize before right-part selection.'
 
+        outer_max_iter = 50
+        inner_max_iter = 100
+        outer_attempts = 0
         while not (objective.simplified and objective.is_correct_right_part):
+            outer_attempts += 1
+            if outer_attempts > outer_max_iter:
+                warnings.warn(
+                    'EqRightPartSelector.apply: outer loop did not converge '
+                    f'after {outer_max_iter} iterations; accepting current state.'
+                )
+                break
             objective.reset_state(True)
             min_fitness = np.inf
             weights_internal = np.zeros(len(objective.structure) - 1)
             min_idx = 0
+            inner_attempts = 0
             while not any(term.contains_deriv(objective.main_var_to_explain) for term in objective.structure):
-            # while not any(term.contains_deriv() for term in objective.structure):
+                inner_attempts += 1
+                if inner_attempts > inner_max_iter:
+                    warnings.warn(
+                        'EqRightPartSelector.apply: restore_property failed to '
+                        f'introduce a deriv of {objective.main_var_to_explain!r} '
+                        f'after {inner_max_iter} attempts; randomizing equation.'
+                    )
+                    objective.randomize()
+                    break
                 objective.restore_property(mandatory_family=False, deriv=True)
-                
+
             for target_idx, target_term in enumerate(objective.structure):
                 if not objective.structure[target_idx].contains_deriv(objective.main_var_to_explain):
-                # if not objective.structure[target_idx].contains_deriv():
                     continue
                 objective.target_idx = target_idx
                 fitness = self.suboperators['fitness_calculation'].apply(objective, arguments = subop_args['fitness_calculation'], force_out_of_place = True)
@@ -87,11 +112,10 @@ class EqRightPartSelector(CompoundOperator):
             if not self.simplify_equation(objective):
                 objective.simplified = True
             if objective.structure[objective.target_idx].contains_deriv(objective.main_var_to_explain):
-            # if objective.structure[objective.target_idx].contains_deriv():
                 objective.is_correct_right_part = True
-        else:
-            objective.right_part_selected = True
-            objective.remove_zero_terms()
+
+        objective.right_part_selected = True
+        objective.remove_zero_terms()
 
     def simplify_equation(self, objective: Equation):
         # Get nonzero terms
@@ -99,52 +123,62 @@ class EqRightPartSelector(CompoundOperator):
         nonrs_terms = [term for i, term in enumerate(objective.structure) if i != objective.target_idx]
         nonzero_terms = [item for item, keep in zip(nonrs_terms, nonzero_terms_mask) if keep]
         nonzero_terms.append(objective.structure[objective.target_idx])
-        equation_terms = [term.term_label_without_power for term in nonzero_terms]
+        equation_terms = [term.factors_labels_without_power for term in nonzero_terms]
 
-        # If amount nonzero terms is more than one -- get their intersection
-        if len(equation_terms) > 1:
-            common_factors = list(frozenset.intersection(*equation_terms))
-            if len(common_factors) > 0:
-                for common_factor in common_factors:
-                    # Find if this intersection in the same dimension (i.e. trigonometry functions) + it's minimal order
-                    min_order = np.inf
-                    common_dim = []
-                    for term in nonzero_terms:
-                        for factor in term.structure:
-                            if len(factor.params) == 1:
-                                factor_label = (factor.cache_label[0])
+        if len(equation_terms) <= 1:
+            return False
+        common_factors = list(frozenset.intersection(*equation_terms))
+        if not common_factors:
+            return False
+
+        for common_factor in common_factors:
+            # Min power across the matching factor in every nonzero term.
+            min_order = np.inf
+            for term in nonzero_terms:
+                for factor in term.structure:
+                    if factor.structural_label_without_power == common_factor:
+                        if factor.cache_label[1][0] < min_order:
+                            min_order = factor.cache_label[1][0]
+
+            # Reduce order of common factor in every term; drop zero-power factors.
+            max_iter = 100
+            for term in nonzero_terms:
+                factors_simplified = []
+                for factor in term.structure:
+                    if factor.structural_label_without_power == common_factor:
+                        for i, value in enumerate(factor.params_description):
+                            if factor.params_description[i]["name"] == "power":
+                                factor.params[i] -= min_order
+                                if factor.params[i] == 0:
+                                    factors_simplified.append(factor)
                             else:
-                                factor_label = (factor.cache_label[0], (factor.cache_label[1][-1]))
-                            if factor_label == common_factor:
-                                if len(factor.params) > 1:
-                                    common_dim.append(factor.params[-1])
-                                if factor.cache_label[1][0] < min_order:
-                                    min_order = factor.cache_label[1][0]
-                    if len(set(common_dim)) < 2:
-                        # If dimension is the same -- reduce order of terms' factor
-                        for term in nonzero_terms:
-                            factors_simplified = []
-                            for factor in term.structure:
-                                if len(factor.params) == 1:
-                                    factor_label = (factor.cache_label[0])
-                                else:
-                                    factor_label = (factor.cache_label[0], (factor.cache_label[1][-1]))
-                                if factor_label == common_factor:
-                                    for i, value in enumerate(factor.params_description):
-                                        if factor.params_description[i]["name"] == "power":
-                                            factor.params[i] -= min_order
-                                            if factor.params[i] == 0:
-                                                factors_simplified.append(factor)
-                                        else:
-                                            continue
-                            term.structure = [factor for factor in term.structure if factor not in factors_simplified]
-                            term.reset_saved_state()
+                                continue
+                term.structure = [factor for factor in term.structure if factor not in factors_simplified]
+                term.reset_saved_state()
 
-                            # If term's order became zero -- replace term
-                            while len(term.structure) == 0 or not term.contains_meaningful() or len(objective.terms_labels) != len(objective.structure):
-                                term.randomize()
+                # If term's order became zero -- replace term.
+                # Cap retries so a constrained token pool can't
+                # deadlock the optimizer (same hazard fixed in
+                # ``enforce_rps_uniqueness``).
+                attempts = 0
+                while attempts < max_iter:
+                    empty = len(term.structure) == 0
+                    not_meaningful = not term.contains_meaningful()
+                    signatures = {t.factors_labels for t in objective.structure}
+                    duplicate = len(signatures) != len(objective.structure)
+                    if not (empty or not_meaningful or duplicate):
+                        break
+                    term.randomize()
+                    attempts += 1
 
-                        return True
+            # Structure changed: invalidate stale fitness /
+            # weights / AIC caches while leaving RPS to the
+            # caller's outer loop.
+            try:
+                objective.reset_state(reset_right_part=False)
+            except TypeError:
+                objective.reset_state()
+            return True
         return False
 
     def use_default_tags(self):
@@ -185,17 +219,33 @@ class RandomRHPSelector(CompoundOperator):
         if not objective.right_part_selected:
             term_selection = [term_idx for term_idx, term in enumerate(objective.structure)
                               if term.contains_deriv(variable = objective.main_var_to_explain)]
-            
+
             if len(term_selection) == 0:
                 idx = np.random.choice([term_idx for term_idx, _ in enumerate(objective.structure)])
                 prev_term = objective.structure[idx]
-                while True:
+                # Bounded retry + dedup check: never spin against a finite
+                # token pool, never introduce a duplicate term (see
+                # feedback-structure-dedup memory).
+                max_iter = 100
+                candidate_term = None
+                for _ in range(max_iter):
                     candidate_term = Term(pool = prev_term.pool, mandatory_family = objective.main_var_to_explain,
-                                          max_factors_in_term = len(prev_term.structure), 
+                                          max_factors_in_term = len(prev_term.structure),
                                           create_derivs = True)
-                    if candidate_term.contains_deriv(variable = objective.main_var_to_explain):
-                        break
-                
+                    if not candidate_term.contains_deriv(variable = objective.main_var_to_explain):
+                        continue
+                    sig = candidate_term.factors_labels
+                    if any(j != idx and t.factors_labels == sig
+                           for j, t in enumerate(objective.structure)):
+                        continue
+                    break
+                else:
+                    warnings.warn(
+                        f'RandomRHPSelector: could not produce a unique deriv term '
+                        f'for {objective.main_var_to_explain!r} after {max_iter} '
+                        f'attempts; keeping last candidate (may duplicate).'
+                    )
+
                 objective.structure[idx] = candidate_term
             else:
                 idx = np.random.choice(term_selection)
@@ -208,3 +258,125 @@ class RandomRHPSelector(CompoundOperator):
 
     def use_default_tags(self):
         self._tags = {'equation right part selection', 'gene level', 'contains suboperators', 'inplace'}
+
+
+def _scrub_conflicting_terms(equation: Equation, fixed_rps, *, max_iter: int = 100,
+                              skip_idx=None) -> bool:
+    """Replace any term in ``equation.structure`` whose factor signature is a
+    superset of one of the ``fixed_rps`` signatures (each a ``frozenset`` of
+    factor labels). When ``skip_idx`` is passed, the term at that index is left
+    alone -- used by the bidirectional pass below to preserve an equation's
+    own already-selected RPS.
+
+    Returns True if at least one term was randomized; the equation's cached
+    fitness/weight state is reset on the way out.
+    """
+    if not fixed_rps:
+        return False
+
+    def _conflicts(t):
+        return any(rs.issubset(t.factors_labels) for rs in fixed_rps)
+
+    changed = False
+    for idx, term in enumerate(equation.structure):
+        if idx == skip_idx:
+            continue
+        if not _conflicts(term):
+            continue
+        for _ in range(max_iter):
+            term.randomize()
+            term.reset_saved_state()
+            signatures = {t.factors_labels for t in equation.structure}
+            duplicate = len(signatures) != len(equation.structure)
+            if not _conflicts(term) and not duplicate:
+                break
+        changed = True
+
+    if changed:
+        try:
+            equation.reset_state(reset_right_part=False)
+        except TypeError:
+            equation.reset_state()
+    return changed
+
+
+class SoEqRightPartSelector(CompoundOperator):
+    """Chromosome-level RPS that enforces bidirectional cross-equation
+    uniqueness.
+
+    Forward sequential pass (pre-scrub each equation against
+    already-selected RPS, then run the per-equation sweep) handles the
+    case where equation_k > equation_j re-uses equation_j's RPS as a
+    non-target term. A second bidirectional convergence pass closes the
+    other direction: equation_j's structure is also scrubbed of any term
+    whose factor set is a superset of equation_k's (k > j) RPS. Without
+    the second pass the FIRST equation in ``vars_to_describe`` could keep
+    a later equation's target as a non-RPS term (e.g. LV's eq for u
+    keeping ``dv/dx0``), since at the time it was processed the later
+    RPS was not yet known.
+
+    The bidirectional pass is bounded by ``max_bidirectional_passes`` and
+    exits as soon as a full sweep produces no scrubbing changes
+    (fixed-point). Each pass also re-runs the per-equation selector when
+    its structure changed, since the prior target_idx may no longer be
+    optimal under the new structure.
+    """
+    key = 'SoEqRightPartSelector'
+
+    def apply(self, objective, arguments: dict):
+        self_args, subop_args = self.parse_suboperator_args(arguments=arguments)
+        eq_selector = self.suboperators['eq_right_part_selector']
+        eq_args = subop_args.get('eq_right_part_selector', arguments)
+
+        equations = list(objective)
+        rps_signatures = [None] * len(equations)
+
+        # Forward sequential pass: pre-scrub each equation against
+        # already-fixed RPS signatures, then run the per-equation selector.
+        for eq_idx, equation in enumerate(equations):
+            other_rps = [rs for rs in rps_signatures[:eq_idx] if rs is not None]
+            if other_rps:
+                _scrub_conflicting_terms(equation, other_rps, max_iter=100)
+            eq_selector.apply(objective=equation, arguments=eq_args)
+            try:
+                rps_signatures[eq_idx] = equation.structure[
+                    equation.target_idx].factors_labels
+            except (AttributeError, IndexError, TypeError):
+                rps_signatures[eq_idx] = None
+
+        # Bidirectional convergence: each equation now knows the others'
+        # RPS, so re-scrub against the full set (skipping own target) and
+        # re-select when scrubbing changes the structure. Iterates until
+        # a full pass yields no changes.
+        max_passes = 5
+        for _ in range(max_passes):
+            any_changes = False
+            for eq_idx, equation in enumerate(equations):
+                other_rps = [rs for i, rs in enumerate(rps_signatures)
+                             if i != eq_idx and rs is not None]
+                if not other_rps:
+                    continue
+                target_idx = getattr(equation, 'target_idx', None)
+                changed = _scrub_conflicting_terms(
+                    equation, other_rps, max_iter=100, skip_idx=target_idx,
+                )
+                if not changed:
+                    continue
+                # Scrubbing mutated non-target terms: force re-selection so
+                # the post-scrub structure is evaluated for the best RPS.
+                equation.right_part_selected = False
+                equation.simplified = False
+                equation.is_correct_right_part = False
+                eq_selector.apply(objective=equation, arguments=eq_args)
+                try:
+                    rps_signatures[eq_idx] = equation.structure[
+                        equation.target_idx].factors_labels
+                except (AttributeError, IndexError, TypeError):
+                    pass
+                any_changes = True
+            if not any_changes:
+                break
+
+    def use_default_tags(self):
+        self._tags = {'right part selection', 'chromosome level',
+                      'contains suboperators', 'inplace'}

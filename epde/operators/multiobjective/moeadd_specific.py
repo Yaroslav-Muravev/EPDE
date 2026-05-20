@@ -29,8 +29,19 @@ def penalty_based_intersection(sol_obj, weight, ideal_obj,
     '''
     solution_objective = sol_obj.obj_fun if obj_normalizer is None else obj_normalizer(sol_obj.obj_fun)
 
-    weight_full = np.array([item for item in weight for _ in sol_obj.vals])
-    ideal_obj_full = np.array([item for item in ideal_obj for _ in sol_obj.vals])
+    weight_arr = np.asarray(weight)
+    ideal_obj_arr = np.asarray(ideal_obj)
+    n_eqs = len(sol_obj.vals)
+    n_obj = solution_objective.shape[0]
+    if weight_arr.size * n_eqs == n_obj:
+        # MOEA/D weight is per objective TYPE -- expand to per-equation space.
+        weight_full = np.repeat(weight_arr, n_eqs)
+        ideal_obj_full = np.repeat(ideal_obj_arr, n_eqs)
+    else:
+        # Weight already lives in the full objective space (legacy
+        # objective list of per-equation partials).
+        weight_full = weight_arr
+        ideal_obj_full = ideal_obj_arr
 
     weight_norm = np.linalg.norm(weight_full)
 
@@ -106,7 +117,7 @@ def locate_pareto_worst(levels, weights: np.ndarray, best_obj: np.ndarray, penal
         # NOTE: If your solution objects have a `.rank` or `.ndl` attribute,
         # replace this inner loop entirely with: `domain_solution_NDL_idxs[solution_idx] = solution.rank`
         for level_idx, level in enumerate(levels.levels):
-            if any(solution.terms_labels == level_solution.terms_labels for level_solution in level):
+            if any(solution.equations_labels == level_solution.equations_labels for level_solution in level):
                 domain_solution_NDL_idxs[solution_idx] = level_idx
                 break
 
@@ -360,18 +371,13 @@ class OffspringUpdater(CompoundOperator):
                 temp_offspring = self.suboperators['chromosome_mutation'].apply(objective=temp_offspring,
                                                                                 arguments=subop_args['chromosome_mutation'])
                 temp_offspring.reset_state(True)
+                # SoEqRightPartSelector enforces cross-equation RPS
+                # uniqueness inline (sequential pre-scrub), so no post-hoc
+                # ``enforce_rps_uniqueness`` retry loop is needed here.
                 self.suboperators['right_part_selector'].apply(objective=temp_offspring,
                                                                arguments=subop_args['right_part_selector'])
 
-                if len(temp_offspring.vars_to_describe) > 1:
-                    term_replaced = is_rps_in_other_equation(temp_offspring)
-                    while any(term_replaced):
-                        temp_offspring.reset_state(True)
-                        self.suboperators['right_part_selector'].apply(objective=temp_offspring,
-                                                                       arguments=subop_args['right_part_selector'])
-                        term_replaced = is_rps_in_other_equation(temp_offspring)
-
-                system = temp_offspring.terms_labels
+                system = temp_offspring.equations_labels
                 if system not in objective.history:
                     self.suboperators['chromosome_fitness'].apply(objective=temp_offspring,
                                                                   arguments=subop_args['chromosome_fitness'])
@@ -437,32 +443,18 @@ class InitialParetoLevelSorting(CompoundOperator):
         if len(objective.population) == 0:
             for idx, candidate in enumerate(objective.unplaced_candidates):
                 candidate.reset_state(True)
+                # SoEqRightPartSelector handles cross-equation RPS
+                # uniqueness inline; no post-hoc retry needed.
                 self.suboperators['right_part_selector'].apply(objective = candidate,
                                                                 arguments = subop_args['right_part_selector'])
-                if len(candidate.vars_to_describe) > 1:
-                    replaced = is_rps_in_other_equation(candidate)
-                    while any(replaced):
-                        candidate.reset_state(True)
-                        self.suboperators['right_part_selector'].apply(objective=candidate,
-                                                                       arguments=subop_args['right_part_selector'])
-                        replaced = is_rps_in_other_equation(candidate)
 
-                system = candidate.terms_labels
+                system = candidate.equations_labels
                 while system in objective.history:
                     candidate.create()
                     candidate.reset_state(True)
                     self.suboperators['right_part_selector'].apply(objective=candidate,
                                                                    arguments=subop_args['right_part_selector'])
-
-                    if len(candidate.vars_to_describe) > 1:
-                        replaced = is_rps_in_other_equation(candidate)
-                        while any(replaced):
-                            candidate.reset_state(True)
-                            self.suboperators['right_part_selector'].apply(objective=candidate,
-                                                                           arguments=subop_args['right_part_selector'])
-                            replaced = is_rps_in_other_equation(candidate)
-
-                    system = candidate.terms_labels
+                    system = candidate.equations_labels
                 self.suboperators['chromosome_fitness'].apply(objective=candidate,
                                                               arguments=subop_args['chromosome_fitness'])
                 objective.history.add(system)
@@ -503,20 +495,61 @@ def has_subset_pair(collection_of_sets):
     # No subset relationship found among any pairs
     return False, None, None
 
-def is_rps_in_other_equation(objective):
-    rsterms = [None for _ in objective.vals]
-    replaced = [False for _ in objective.vals]
-    for equation_idx, equation in enumerate(objective.vals):
-        rsterms[equation_idx] = equation.structure[equation.target_idx].term_label
+def _debug_assert_rps_unique(objective) -> list:
+    """Debug helper: scan an SoEq's equations and return a per-equation
+    list of bools indicating which equations contain at least one
+    non-target term whose factor set is a superset of another equation's
+    target term factor set.
 
-    for equation_idx, equation in enumerate(objective.vals):
-        rs = rsterms[:equation_idx] + rsterms[equation_idx + 1:]
+    The post-hoc enforcement loop that used to call this and rewrite
+    conflicting terms is gone -- ``SoEqRightPartSelector`` now propagates
+    the uniqueness constraint forward across equations during the RPS
+    sweep itself, so a correctly-implemented pipeline must produce an
+    all-False result here. Use this in tests or temporary asserts to
+    catch regressions; do NOT wire it back into the operator graph as a
+    repair step.
+    """
+    equations = list(objective.vals)
+    rsterms = [eq.structure[eq.target_idx].factors_labels for eq in equations]
+    flagged = [False] * len(equations)
+
+    for eq_idx, equation in enumerate(equations):
+        other_rs = rsterms[:eq_idx] + rsterms[eq_idx + 1:]
         for term_idx, term in enumerate(equation.structure):
-            if any(rsterm.issubset(term.term_label) for rsterm in rs):
-                replaced[equation_idx] = True
-                term.randomize()
-                term.reset_saved_state()
-                while any(rsterm.issubset(term.term_label) for rsterm in rs) or len(equation.terms_labels) != len(equation.structure):
-                    term.randomize()
-                    term.reset_saved_state()
-    return replaced
+            if term_idx == equation.target_idx:
+                continue
+            if any(rs.issubset(term.factors_labels) for rs in other_rs):
+                flagged[eq_idx] = True
+                break
+    return flagged
+
+
+def is_rps_in_other_equation(objective):
+    """Deprecated alias. The post-hoc uniqueness repair has been replaced
+    by ``SoEqRightPartSelector`` (sequential pre-scrub), so this is now a
+    pure assertion helper that returns a per-equation flag list without
+    mutating anything. External callers should migrate to using the new
+    operator and remove their ``while any(is_rps_in_other_equation(...))``
+    retry loops; the new operator guarantees the result is all-False on a
+    well-formed SoEq.
+    """
+    warnings.warn(
+        'is_rps_in_other_equation is now a pure debug check; '
+        'SoEqRightPartSelector enforces uniqueness during RPS dispatch. '
+        'Drop your retry loop.',
+        DeprecationWarning, stacklevel=2,
+    )
+    return _debug_assert_rps_unique(objective)
+
+
+def enforce_rps_uniqueness(objective, *, max_iter: int = 100) -> list:
+    """Deprecated. Retained as an assertion-only shim for code that
+    imports the old name; mutates nothing. Wraps
+    :func:`_debug_assert_rps_unique`.
+    """
+    warnings.warn(
+        'enforce_rps_uniqueness is now a pure debug check; '
+        'SoEqRightPartSelector enforces uniqueness during RPS dispatch.',
+        DeprecationWarning, stacklevel=2,
+    )
+    return _debug_assert_rps_unique(objective)

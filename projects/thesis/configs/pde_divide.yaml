@@ -1,0 +1,6 @@
+# Rational PDE (synthetic 1+1D PDE)
+#   du/dx0 * x = du/dx1 + 0.25 * d^2u/dx1^2 * x
+# Data: PDE_divide.npy
+name: pde_divide
+truth_equations:
+  - "1.0 * du/dx1{power: 1.0} + 0.25 * d^2u/dx1^2{power: 1.0} * x_1{power: 1.0, dim: 1.0} = du/dx0{power: 1.0} * x_1{power: 1.0, dim: 1.0}"

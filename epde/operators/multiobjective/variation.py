@@ -92,11 +92,11 @@ class ParetoLevelsCrossover(CompoundOperator):
                 assert len(crossover_pool[pair_idx, 0].vals[eq_key].terms_labels) == len(crossover_pool[pair_idx, 0].vals[eq_key].structure)
                 assert len(crossover_pool[pair_idx, 1].vals[eq_key].terms_labels) == len(crossover_pool[pair_idx, 1].vals[eq_key].structure)
 
-            # if len(new_system_1.vars_to_describe) > 1 and np.random.random() < 0.2:
-            #     key = np.random.choice(new_system_1.vars_to_describe)
-            #     temp = deepcopy(new_system_1.vals.chromosome[key])
-            #     new_system_1.vals.chromosome[key] = new_system_2.vals.chromosome[key]
-            #     new_system_2.vals.chromosome[key] = temp
+            if len(new_system_1.vars_to_describe) > 1 and np.random.random() < 0.2:
+                key = np.random.choice(new_system_1.vars_to_describe)
+                temp = deepcopy(new_system_1.vals.chromosome[key])
+                new_system_1.vals.chromosome[key] = new_system_2.vals.chromosome[key]
+                new_system_2.vals.chromosome[key] = temp
 
             offsprings.extend([new_system_1, new_system_2])
 
@@ -185,24 +185,36 @@ class EquationCrossover(CompoundOperator):
 
         equation1.structure = flatten(equation1_terms); equation2.structure = flatten(equation2_terms)
 
-        for term in equation1.structure:
-            if term.term_label not in equation1.terms_labels:
+        # Inject parent2's "similar but not identical" terms into equation1
+        # (and vice versa) when they don't already appear there. The previous
+        # version iterated ``equation1.structure`` here, but every term in
+        # that list is already in ``equation1.terms_labels`` by construction,
+        # so the loop was a no-op. The intent is to take partner-only similar
+        # terms from the OTHER parent's similar bucket.
+        eq1_signatures = {t.factors_labels for t in equation1.structure}
+        for term in equation2_terms[1]:
+            if term.factors_labels not in eq1_signatures:
                 equation1.structure.append(term)
+                eq1_signatures.add(term.factors_labels)
 
+        eq2_signatures = {t.factors_labels for t in equation2.structure}
         for term in equation1_terms[1]:
-            if term.term_label not in equation2.terms_labels:
+            if term.factors_labels not in eq2_signatures:
                 equation2.structure.append(term)
+                eq2_signatures.add(term.factors_labels)
 
         for i in range(len(equation1.structure)):
-            if equation1.structure[i].term_label == equation1_target_term.term_label:
+            if equation1.structure[i].factors_labels == equation1_target_term.factors_labels:
                 equation1.target_idx = i
                 break
 
         for i in range(len(equation2.structure)):
-            if equation2.structure[i].term_label == equation2_target_term.term_label:
+            if equation2.structure[i].factors_labels == equation2_target_term.factors_labels:
                 equation2.target_idx = i
                 break
 
+        equation1._invalidate_label_cache()
+        equation2._invalidate_label_cache()
         return equation1, equation2
 
     def use_default_tags(self):
@@ -210,11 +222,11 @@ class EquationCrossover(CompoundOperator):
 
 class EquationExchangeCrossover(CompoundOperator):
     key = 'EquationExchangeCrossover'
-    
+
     @HistoryExtender(f'\n -> performing equation exchange crossover', 'ba')
     def apply(self, objective : tuple, arguments : dict):
         self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
-        
+
         # objective[0].structure, objective[1].structure = objective[1].structure, objective[0].structure
         return objective[0], objective[1]
 

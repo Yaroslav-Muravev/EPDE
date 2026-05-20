@@ -242,10 +242,10 @@ def ns_discovery(foldername, noise_level):
     #                                     preprocessor_kwargs={'epochs_max' : 1e3})
     epde_search_obj.set_preprocessor(default_preprocessor_type='FD',
                                      preprocessor_kwargs={})
-    popsize = 64
+    popsize = 32
 
     epde_search_obj.set_moeadd_params(population_size=popsize,
-                                      training_epochs=15)
+                                      training_epochs=5)
 
     custom_grid_tokens = CacheStoredTokens(token_type='grid',
                                                 token_labels=['t', 'x'],

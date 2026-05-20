@@ -273,6 +273,48 @@ class Factor(TerminalToken):
         cache_label = factor_params_to_str(self)
         return cache_label
 
+    def _quantized_params(self, drop_power: bool = False) -> tuple:
+        """Return params with continuous-tolerance ones quantized into bucket
+        indices and exact-equality ones passed through. Continuous params
+        (those with ``equality_ranges[name] > 0``, e.g. trig ``freq``) get
+        ``int((v - bounds[0]) / equality_ranges[name])``; exact-equality
+        params (``power``, ``dim``) stay numeric. When ``drop_power=True``
+        the param named ``'power'`` is omitted from the result tuple.
+        """
+        parts = []
+        for i in range(len(self.params)):
+            name = self.params_description[i]['name']
+            if drop_power and name == 'power':
+                continue
+            v = self.params[i]
+            tol = self.equality_ranges.get(name, 0)
+            if tol > 0:
+                origin = self.params_description[i]['bounds'][0]
+                parts.append(int((v - origin) / tol))
+            else:
+                parts.append(v)
+        return tuple(parts)
+
+    @property
+    def structural_label(self):
+        """Hashable canonical identity for structural dedup.
+
+        Sits next to ``cache_label`` (which keys the tensor cache and
+        must stay exact). Continuous params are quantized into bucket
+        indices so set-based dedup and ``Factor.__eq__``'s tolerance
+        comparison agree.
+        """
+        return (self.cache_label[0], self._quantized_params(drop_power=False))
+
+    @property
+    def structural_label_without_power(self):
+        """``structural_label`` with the ``power`` param dropped.
+
+        Used by ``simplify_equation`` to find shared factors across
+        terms regardless of their individual powers.
+        """
+        return (self.cache_label[0], self._quantized_params(drop_power=True))
+
     @property
     def name(self):
         form = self.label + '{'

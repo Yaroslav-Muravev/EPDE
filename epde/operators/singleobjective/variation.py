@@ -175,10 +175,12 @@ class EquationCrossover(CompoundOperator):
 
         for i in range(same_num + similar_num, len(objective[0].structure)):
             if check_uniqueness(objective[0].structure[i], objective[1].structure) and check_uniqueness(objective[1].structure[i], objective[0].structure):
-                objective[0].structure[i], objective[1].structure[i] = self.suboperators['term_crossover'].apply(objective = (objective[0].structure[i], 
+                objective[0].structure[i], objective[1].structure[i] = self.suboperators['term_crossover'].apply(objective = (objective[0].structure[i],
                                                                                                                               objective[1].structure[i]),
                                                                                                                arguments = subop_args['term_crossover'])
-                
+
+        objective[0]._invalidate_label_cache()
+        objective[1]._invalidate_label_cache()
         return objective[0], objective[1]
 
     def use_default_tags(self):
@@ -186,12 +188,14 @@ class EquationCrossover(CompoundOperator):
 
 class EquationExchangeCrossover(CompoundOperator):
     key = 'EquationExchangeCrossover'
-    
+
     @HistoryExtender(f'\n -> performing equation exchange crossover', 'ba')
     def apply(self, objective : tuple, arguments : dict):
         self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
-        
+
         objective[0].structure, objective[1].structure = objective[1].structure, objective[0].structure
+        objective[0]._invalidate_label_cache()
+        objective[1]._invalidate_label_cache()
         return objective[0], objective[1]
 
     def use_default_tags(self):

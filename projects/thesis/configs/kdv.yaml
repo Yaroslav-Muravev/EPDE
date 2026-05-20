@@ -1,0 +1,6 @@
+# KdV homogeneous (1+1D PDE)
+#   du/dx0 = -6*u*du/dx1 - d^3u/dx1^3
+# Data: kdv_sindy.mat
+name: kdv
+truth_equations:
+  - "-6.0 * du/dx1{power: 1.0} * u{power: 1.0} + -1.0 * d^3u/dx1^3{power: 1.0} = du/dx0{power: 1.0}"

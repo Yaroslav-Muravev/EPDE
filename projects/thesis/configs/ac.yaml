@@ -1,0 +1,5 @@
+# Allen-Cahn (1+1D reaction-diffusion PDE)
+#   du/dx0 = 0.0001*d^2u/dx1^2 + 5*u - 5*u^3
+name: ac
+truth_equations:
+  - "0.0001 * d^2u/dx1^2{power: 1.0} + -5.0 * u{power: 3.0} + 5.0 * u{power: 1.0} = du/dx0{power: 1.0}"

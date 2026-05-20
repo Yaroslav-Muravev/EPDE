@@ -230,15 +230,16 @@ class EpdeSearch(object):
         optimizer_exec_params (`dict`): parameters for execution algorithm of optimization
         optimizer (`OptimizationPatternDirector`): the strategy of the evolutionary algorithm
     """
-    def __init__(self, multiobjective_mode: bool = True, use_pic = True, use_default_strategy: bool = True, director=None, 
+    def __init__(self, multiobjective_mode: bool = True, use_pic = True, use_default_strategy: bool = True, director=None,
                  director_params: dict = {'variation_params': {}, 'mutation_params': {},
-                                          'pareto_combiner_params': {}, 'pareto_updater_params': {}}, 
+                                          'pareto_combiner_params': {}, 'pareto_updater_params': {}},
                  time_axis: int = 0, define_domain: bool = True, function_form=None, boundary: int = 0,
-                 use_solver: bool = False, verbose_params: dict = {'show_iter_idx' : True}, 
+                 use_solver: bool = False, verbose_params: dict = {'show_iter_idx' : True},
                  coordinate_tensors=None, memory_for_cache=15, prune_domain: bool = False,
-                 pivotal_tensor_label=None, pruner=None, threshold: float = 1e-2, 
-                 division_fractions=3, rectangular: bool = True, 
-                 params_filename: str = None, device: str = 'cpu'):
+                 pivotal_tensor_label=None, pruner=None, threshold: float = 1e-2,
+                 division_fractions=3, rectangular: bool = True,
+                 params_filename: str = None, device: str = 'cpu',
+                 fitness_cls=None, sparsity_cls=None):
         """
         Args:
             multiobjective_mode (`bool`): optional, default True
@@ -319,8 +320,9 @@ class EpdeSearch(object):
                 self.director = BaselineDirector()
                 builder = StrategyBuilder(EvolutionaryStrategy)
             self.director.builder = builder
-            self.director.use_baseline(use_solver=self._mode_info['solver_fitness'], 
-                                       use_pic=self._use_pic, params=director_params)
+            self.director.use_baseline(use_solver=self._mode_info['solver_fitness'],
+                                       use_pic=self._use_pic, params=director_params,
+                                       fitness_cls=fitness_cls, sparsity_cls=sparsity_cls)
         else:
             raise NotImplementedError('Wrong arguments passed during the epde search initialization')
 
@@ -360,8 +362,9 @@ class EpdeSearch(object):
                           subregion_mating_limitation: float = .95,
                           PBI_penalty: float = 1., training_epochs: int = 100,
                           neighborhood_selector: Callable = simple_selector,
-                          neighborhood_selector_params: tuple = (4,)):
-        """
+                          neighborhood_selector_params: tuple = (4,),
+                          early_stopping_callback: Callable = None):
+        r"""
         Setting the parameters of the multiobjective evolutionary algorithm. declaration of
         the default values is held in the initialization of EpdeSearch object.
 
@@ -416,9 +419,10 @@ class EpdeSearch(object):
                               'nds_method' : nds_method, 
                               'ndl_update' : ndl_update_method}
         
-        self.optimizer_exec_params = {'epochs' : training_epochs}
- 
-    def set_singleobjective_params(self, population_size: int = 4, solution_params: dict = {}, 
+        self.optimizer_exec_params = {'epochs' : training_epochs,
+                                      'early_stopping_callback' : early_stopping_callback}
+
+    def set_singleobjective_params(self, population_size: int = 4, solution_params: dict = {},
                                    sorting_method: Callable = simple_sorting, training_epochs: int = 50):
         """
         Setting parameters for singelobjective optimization.
@@ -948,6 +952,18 @@ class EpdeSearch(object):
             return global_var.grid_cache, global_var.tensor_cache
         else:
             return None, global_var.tensor_cache
+
+    @property
+    def pareto_history(self):
+        """Per-epoch Pareto-level-0 snapshots, populated during ``fit``.
+
+        Returns a list of length ``training_epochs``; each element is a
+        list of ``{'text_form': str, 'obj_fun': list}`` dicts -- one per
+        solution on the non-dominated front at the end of that epoch.
+        Empty list when the optimizer hasn't been run or doesn't track
+        epoch history (e.g. single-objective mode).
+        """
+        return getattr(self.optimizer, '_pareto_history', [])
 
     def get_equations_by_complexity(self, complexity : Union[float, list]):
         '''

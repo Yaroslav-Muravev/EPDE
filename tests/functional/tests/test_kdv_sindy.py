@@ -4,27 +4,21 @@ from tests.functional.operator_factory import FitnessOperatorFactory
 from tests.functional.scenarios.kdv.kdv import KdVTest
 from epde.operators.utils.default_parameter_loader import EvolutionaryParams
 
-operator_params_deepxde = {
-    "deepxde_config": {
-        "net": [50, 50, 50],
-        "activation": "tanh",
-        "optimizer": "adam",
-        "lr": 1e-3,
-        "num_domain": 1000,
-        "num_boundary": 200,
-        "num_initial": 200,
-        "epochs": 2000,
-    },
-    "penalty_coeff": 0.2,
-    "error_metric": "rmse",
-}
-
 operator_params_l2lr = EvolutionaryParams().get_default_params_for_operator(
     "DiscrepancyBasedFitnessWithCV"
 )
 
+operator_params_deepxde = EvolutionaryParams().get_default_params_for_operator(
+    'DeepXDEBasedFitness'
+)
+
+operator_params_pic = EvolutionaryParams().get_default_params_for_operator(
+    'PIC'
+)
+
 ALL_CASES = [
     ("DeepXDEBasedFitness", operator_params_deepxde),
+    ("PIC", operator_params_pic),
     ("L2LRFitness", operator_params_l2lr),
 ]
 

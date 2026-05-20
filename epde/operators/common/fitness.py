@@ -13,7 +13,10 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib import cm
 
-from epde.integrate import SolverAdapter, DeepXDEAdapter
+from epde.integrate import SolverAdapter
+# DeepXDEAdapter is imported lazily inside DeepXDEBasedFitness.apply() to
+# avoid triggering deepxde's import-time backend banner when no DeepXDE
+# solver is used (e.g. legacy L2/L2LR fitness paths).
 from epde.structure.main_structures import SoEq, Equation
 from epde.operators.utils.template import CompoundOperator
 import epde.globals as global_var
@@ -69,17 +72,38 @@ class L2Fitness(CompoundOperator):
 
         if force_out_of_place:
             self.suboperators['sparsity'].apply(objective, subop_args['sparsity'])
+            # Reject degenerate candidates whose entire non-target library was
+            # zeroed by sparsity. Without this, ``EqRightPartSelector`` may
+            # commit a target_idx whose only surviving content is the
+            # intercept, yielding population members of the form
+            # ``~0 = u^2 * du/dx0`` (no real LHS) that cannot represent any
+            # PDE by construction. Mirrors the rejection in ``L2LRFitness``
+            # so the LEGACY (L2Fitness) and NEW (L2LRFitness) RPS sweeps
+            # share the same admissibility criterion.
+            if all(objective.weights_internal == 0):
+                return None
         self.suboperators['coeff_calc'].apply(objective, subop_args['coeff_calc'])
 
         _, target, features = objective.evaluate(normalize = False, return_val = False)
         if features is None:
             discr_feats = 0
         else:
-            discr_feats = np.dot(features, objective.weights_final[:-1][objective.weights_internal != 0])
+            n_cols = features.shape[1] if features.ndim > 1 else 1
+            mask = objective.weights_internal != 0
+            if n_cols == len(mask):
+                discr_feats = np.dot(features, objective.weights_internal)
+            elif n_cols == int(mask.sum()):
+                discr_feats = np.dot(features, objective.weights_final[:-1])
+            else:
+                discr_feats = np.zeros(features.shape[0])
 
         discr = (discr_feats + np.full(target.shape, objective.weights_final[-1]) - target)
-        self.g_fun_vals = global_var.grid_cache.g_func_flat
-        discr = np.multiply(discr, self.g_fun_vals)
+        try:
+            self.g_fun_vals = global_var.grid_cache.g_func[global_var.grid_cache.g_func_mask].reshape(-1)
+        except AttributeError:
+            self.g_fun_vals = None
+        if self.g_fun_vals is not None and self.g_fun_vals.shape == discr.shape:
+            discr = np.multiply(discr, self.g_fun_vals)
         rl_error = np.linalg.norm(discr, ord = 2)
 
         if not (self.params['penalty_coeff'] > 0. and self.params['penalty_coeff'] < 1.):
@@ -137,7 +161,21 @@ class L2LRFitness(CompoundOperator):
         if features is None:
             discr = target - target.mean()
         else:
-            discr_feats = np.dot(features, objective.weights_final[:-1])
+            # ``features`` width depends on the ``normalize`` flag passed to
+            # ``evaluate`` above: ``normalize=True`` returns all N-1
+            # non-target columns; ``normalize=False`` filters to only the
+            # nonzero-weight columns. ``weights_final[:-1]`` matches the
+            # latter shape (nonzero count); ``weights_internal`` matches the
+            # former (full N-1, with zeros). Pick whichever lines up with
+            # the actual feature matrix -- same pattern as L2Fitness.apply.
+            n_cols = features.shape[1] if features.ndim > 1 else 1
+            mask = objective.weights_internal != 0
+            if n_cols == len(mask):
+                discr_feats = np.dot(features, objective.weights_internal)
+            elif n_cols == int(mask.sum()):
+                discr_feats = np.dot(features, objective.weights_final[:-1])
+            else:
+                discr_feats = np.zeros(features.shape[0])
             discr_feats = discr_feats + objective.weights_final[-1]
             discr = target - discr_feats
 
@@ -155,19 +193,23 @@ class L2LRFitness(CompoundOperator):
         objective.aic_calculated = True
 
         data_shape = global_var.grid_cache.inner_shape
-        if hasattr(objective, '_cached_sw_weights') and objective._cached_sw_weights is not None:
-            weights = objective._cached_sw_weights
+        if features is None:
+            # Degenerate candidate (all features pruned by sparsity).
+            # Nothing to fit sliding-window weights on -- skip the CV
+            # calculation and report unit stability so downstream callers
+            # still get a finite value.
+            total_lr = 1.0
         else:
-            weights = calculate_weights(features, target, self.g_fun_vals, data_shape, objective.weights_final[-1] != 0)
-        weights_arr = np.array(weights)
-        std = weights_arr.std(axis=0, ddof=1)
-        mu = weights_arr.mean(axis=0)
-
-        # Safe division
-        with np.errstate(divide='ignore', invalid='ignore'):
-            cv = (std ** 2) / (mu ** 2)
-
-        total_lr = sum(cv) / len(data_shape)
+            if hasattr(objective, '_cached_sw_weights') and objective._cached_sw_weights is not None:
+                weights = objective._cached_sw_weights
+            else:
+                weights = calculate_weights(features, target, self.g_fun_vals, data_shape, objective.weights_final[-1] != 0)
+            weights_arr = np.array(weights)
+            std = weights_arr.std(axis=0, ddof=1)
+            mu = weights_arr.mean(axis=0)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                cv = (std ** 2) / (mu ** 2)
+            total_lr = sum(cv) / len(data_shape)
 
         if force_out_of_place:
             return fitness_value * total_lr
@@ -357,9 +399,8 @@ class PIC(CompoundOperator):
             # Safe division
             with np.errstate(divide='ignore', invalid='ignore'):
                 cv = (std ** 2) / (mu ** 2)
-                cv[mu == 0] = 0.0  # Handle zero mean
 
-            total_lr = sum(cv[:-1]) / len(data_shape)
+            total_lr = sum(cv) / len(data_shape)
 
             eq.fitness_calculated = True
             eq.fitness_value = lp
@@ -491,8 +532,8 @@ class DeepXDEBasedFitness(CompoundOperator):
         weights_arr = np.array(weights)
         std = weights_arr.std(axis=0, ddof=1)
         mu = weights_arr.mean(axis=0)
-        cv = np.where(mu != 0, (std / mu) ** 2, 0.0)
-        total_lr = np.sum(cv[:-1]) / len(data_shape) if len(cv) > 1 else 0.0
+        cv = (std ** 2) / (mu ** 2)
+        total_lr = np.sum(cv) / len(data_shape)
         eq.coefficients_stability = total_lr
         eq.stability_calculated = True
 

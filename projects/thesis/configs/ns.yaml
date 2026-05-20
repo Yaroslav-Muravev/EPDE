@@ -1,0 +1,7 @@
+# Navier-Stokes (2+1D, coupled PDE system)
+#
+# NOTE: excluded from smoke runs -- runtime is much higher than the rest
+# of the benchmark. Truth equations are TODO until the Re-specific
+# ground-truth pair + continuity is decided.
+name: ns
+truth_equations: []

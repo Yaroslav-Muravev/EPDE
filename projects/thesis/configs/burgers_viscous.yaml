@@ -1,0 +1,6 @@
+# Burgers viscous (1+1D PDE; SINDy benchmark, nu=0.1)
+#   du/dx0 = -u*du/dx1 + 0.1*d^2u/dx1^2
+# Data: burgers.mat
+name: burgers_viscous
+truth_equations:
+  - "-1.0 * u{power: 1.0} * du/dx1{power: 1.0} + 0.1 * d^2u/dx1^2{power: 1.0} = du/dx0{power: 1.0}"

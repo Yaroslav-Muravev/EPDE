@@ -1,0 +1,9 @@
+# Lorenz system (coupled 3D ODE)
+#   du/dx0 = 10*v - 10*u
+#   dv/dx0 = 28*u - u*w - v
+#   dw/dx0 = u*v - (8/3)*w
+name: lorenz
+truth_equations:
+  - "10.0 * v{power: 1.0} + -10.0 * u{power: 1.0} = du/dx0{power: 1.0}"
+  - "28.0 * u{power: 1.0} + -1.0 * u{power: 1.0} * w{power: 1.0} + -1.0 * v{power: 1.0} = dv/dx0{power: 1.0}"
+  - "1.0 * u{power: 1.0} * v{power: 1.0} + -2.6666666666666665 * w{power: 1.0} = dw/dx0{power: 1.0}"

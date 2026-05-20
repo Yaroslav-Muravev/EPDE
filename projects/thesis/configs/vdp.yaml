@@ -1,0 +1,6 @@
+# Van der Pol oscillator (ODE)
+#   u'' + 0.2*(u^2 - 1)*u' + u = 0
+# i.e. d^2u/dx0^2 = -0.2*u^2*du/dx0 + 0.2*du/dx0 - u
+name: vdp
+truth_equations:
+  - "-0.2 * u{power: 2.0} * du/dx0{power: 1.0} + 0.2 * du/dx0{power: 1.0} + -1.0 * u{power: 1.0} + -0.0 = d^2u/dx0^2{power: 1.0}"
