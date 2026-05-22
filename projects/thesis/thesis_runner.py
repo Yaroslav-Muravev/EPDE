@@ -47,12 +47,29 @@ if _THIS_DIR not in sys.path:
 from epde.interface.interface import EpdeSearch  # noqa: E402
 from epde.operators.common.fitness import L2Fitness, L2LRFitness  # noqa: E402
 from epde.operators.common.sparsity import LASSOSparsity, VWSRSparsity  # noqa: E402
-from epde import GridTokens  # noqa: E402
+from epde import GridTokens, TrigonometricTokens  # noqa: E402
 
 
 CONFIGS_DIR = os.path.join(_THIS_DIR, 'configs')
 ADAPTERS_DIR = os.path.join(_THIS_DIR, 'adapters')
+EXPERIMENTS_DIR = os.path.join(_THIS_DIR, 'experiments')
 RESULTS_DIR = os.path.join(_THIS_DIR, 'results')
+DEFAULTS_PATH = os.path.join(CONFIGS_DIR, 'defaults.yaml')
+
+# Keys consumed from per-system YAMLs by the deep-merge into hparams.
+# Any other top-level key in a per-system YAML (``name``,
+# ``truth_equations``, ``adapter``, ``outdir``) is consumed by
+# load_config directly and never reaches hparams.
+HPARAM_KEYS = ('search', 'preprocessor', 'moeadd', 'grid_tokens',
+               'additional_tokens', 'fit')
+
+# Token classes constructible from YAML (kwargs dict + dimensionality
+# injected at build time). CustomTokens stays out of the registry
+# because its evaluator is a Python callable that doesn't round-trip
+# through YAML -- such tokens live in an adapter's build_extra_tokens.
+_TOKEN_REGISTRY = {
+    'TrigonometricTokens': TrigonometricTokens,
+}
 
 
 # Full 2x2x2 ablation table for the three thesis-NEW contributions:
@@ -111,9 +128,18 @@ class SystemCfg:
     load_data: callable returning ``(coordinate_tensors, data_list,
         variable_names, dimensionality)``. ``dimensionality`` is ``0`` for
         ODE systems and the number of spatial axes for PDE systems.
-    build_extra_tokens: optional callable returning extra EPDE tokens
-        beyond the auto-added ``GridTokens``. Signature
-        ``(coords, dim) -> list``. Default: returns ``[]``.
+    build_extra_tokens: optional callable returning **truth-specific**
+        EPDE tokens beyond what ``hparams['additional_tokens']`` already
+        provides. Signature ``(coords, dim) -> list``. Default: returns
+        ``[]``. Used by adapters whose token-list contains Python
+        callables (e.g. ``CustomTokens`` evaluators) that can't live in
+        YAML.
+    hparams: nested dict of every hyperparameter EpdeSearch /
+        set_preprocessor / set_moeadd_params / search.fit consume.
+        Populated by :func:`load_config` via deep-merge of
+        ``configs/defaults.yaml`` and the per-system YAML. Layout:
+        ``{'search': {...}, 'preprocessor': {...}, 'moeadd': {...},
+        'grid_tokens': {...}, 'additional_tokens': [...], 'fit': {...}}``.
     """
 
     name: str
@@ -123,31 +149,51 @@ class SystemCfg:
     build_extra_tokens: Callable[[Any, int], list] = field(
         default_factory=lambda: (lambda coords, dim: [])
     )
-    data_fun_pow: int = 3
-    early_stop_on_truth: bool = True
+    hparams: dict = field(default_factory=dict)
+
+
+def _load_yaml(path: str) -> dict:
+    """Read a YAML file into a dict, returning ``{}`` for an empty file."""
+    import yaml
+    with open(path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f) or {}
+
+
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Recursively merge ``overrides`` on top of ``base``.
+
+    Nested dicts merge key-by-key (overrides win on conflict). Lists are
+    REPLACED, not concatenated -- so a per-system YAML overriding
+    ``eq_sparsity_interval: [1.0e-3, 1.0]`` wins outright, and
+    ``additional_tokens: []`` disables the defaults' YAML tokens (the
+    adapter's build_extra_tokens still runs).
+    """
+    result = dict(base)
+    for key, override_value in overrides.items():
+        base_value = result.get(key)
+        if isinstance(base_value, dict) and isinstance(override_value, dict):
+            result[key] = _deep_merge(base_value, override_value)
+        else:
+            result[key] = override_value
+    return result
 
 
 def load_config(name_or_path: str) -> SystemCfg:
     """Resolve a YAML config into a fully-populated :class:`SystemCfg`.
 
     ``name_or_path`` may be a bare system name (e.g. ``"lv"`` -- looked up
-    as ``configs/lv.yaml``) or an explicit path to a YAML file (relative
-    paths are resolved against the current working directory).
+    as ``configs/lv.yaml``) or an explicit path to a YAML file.
 
-    Schema (see ``configs/<name>.yaml`` for examples):
-        name: str                                 # required
-        truth_equations: list[str]                # required; canonicalised at load time
-        adapter: str                              # optional; defaults to ``name``
-        outdir: str                               # optional; defaults to ``name`` (under results/)
-        data_fun_pow: int                         # optional; default 3
-        early_stop_on_truth: bool                 # optional; default True
+    The hparams blocks (``search``, ``preprocessor``, ``moeadd``,
+    ``grid_tokens``, ``additional_tokens``, ``fit``) are deep-merged
+    from ``configs/defaults.yaml`` with the per-system YAML on top. Any
+    other top-level key (``name``, ``truth_equations``, ``adapter``,
+    ``outdir``) is consumed directly by this loader.
 
-    Returns the populated dataclass. The adapter module is imported via
-    ``importlib`` from ``projects/thesis/adapters/<adapter>.py``; it must
-    export ``load_data`` and may optionally export ``build_extra_tokens``.
+    The adapter module is imported via ``importlib`` from
+    ``adapters/<adapter>.py``; it must export ``load_data`` and may
+    optionally export ``build_extra_tokens``.
     """
-    import yaml  # local import: only required when YAML configs are used
-
     yaml_path = (
         name_or_path
         if os.path.sep in name_or_path or name_or_path.endswith('.yaml')
@@ -157,19 +203,19 @@ def load_config(name_or_path: str) -> SystemCfg:
     if not os.path.exists(yaml_path):
         raise FileNotFoundError(f"config not found: {yaml_path}")
 
-    with open(yaml_path, 'r', encoding='utf-8') as f:
-        d = yaml.safe_load(f) or {}
+    defaults_dict = _load_yaml(DEFAULTS_PATH) if os.path.exists(DEFAULTS_PATH) else {}
+    system_dict = _load_yaml(yaml_path)
 
-    name = d.get('name')
+    name = system_dict.get('name')
     if not name:
         raise ValueError(f"{yaml_path}: 'name' is required")
 
     from thesis_metrics import canonical_tokens
-    truth_equations = d.get('truth_equations') or []
+    truth_equations = system_dict.get('truth_equations') or []
     truth_tokens = canonical_tokens(truth_equations)
 
-    adapter_name = d.get('adapter', name)
-    if ADAPTERS_DIR not in sys.path:
+    adapter_name = system_dict.get('adapter', name)
+    if _THIS_DIR not in sys.path:
         sys.path.insert(0, _THIS_DIR)
     adapter_mod = importlib.import_module(f'adapters.{adapter_name}')
 
@@ -179,25 +225,25 @@ def load_config(name_or_path: str) -> SystemCfg:
             "(coords, data, variable_names, dim)"
         )
 
-    outdir_rel = d.get('outdir', name)
+    outdir_rel = system_dict.get('outdir', name)
     outdir = (
         outdir_rel
         if os.path.isabs(outdir_rel)
         else os.path.abspath(os.path.join(RESULTS_DIR, outdir_rel))
     )
 
+    overrides = {k: v for k, v in system_dict.items() if k in HPARAM_KEYS}
+    hparams = _deep_merge(defaults_dict, overrides)
+
     kwargs: dict = dict(
         name=name,
         truth_tokens=truth_tokens,
         outdir=outdir,
         load_data=adapter_mod.load_data,
+        hparams=hparams,
     )
     if hasattr(adapter_mod, 'build_extra_tokens'):
         kwargs['build_extra_tokens'] = adapter_mod.build_extra_tokens
-    if 'data_fun_pow' in d:
-        kwargs['data_fun_pow'] = int(d['data_fun_pow'])
-    if 'early_stop_on_truth' in d:
-        kwargs['early_stop_on_truth'] = bool(d['early_stop_on_truth'])
     return SystemCfg(**kwargs)
 
 
@@ -237,50 +283,113 @@ def _build_truth_match_callback(cfg: 'SystemCfg') -> Callable:
     return _cb
 
 
-def build_search(cfg: 'SystemCfg', pipeline_kwargs: dict) -> EpdeSearch:
-    """Universal EPDE search builder for the thesis Section 4.5 comparison.
+def _build_token_pool(cfg: 'SystemCfg', coords, dim: int) -> list:
+    """Assemble the system's full token list.
 
-    Hyperparameters are uniform across all benchmark systems; the only
-    branches are ODE vs PDE (deriv order, grid-token labels, boundary
-    shape) and the per-system data / extra-token callbacks declared on
-    ``cfg``. Pipeline selection is forwarded through ``pipeline_kwargs``.
+    Order: GridTokens (auto-derived labels) + YAML-declared
+    additional_tokens (from cfg.hparams) + adapter's truth-specific
+    build_extra_tokens. ``dimensionality=dim`` is injected at
+    construction time so the same YAML spec works for ODE (dim=0) and
+    every PDE dim>=1 without per-system overrides.
     """
-    coords, data, variable_names, dim = cfg.load_data()
-    boundary = _boundary_for(coords)
-    max_deriv_order = (2,) if dim == 0 else (2, 4)
+    gt = cfg.hparams['grid_tokens']
+    grid_labels = [f'x_{i}' for i in range(dim + 1)]
+    pool: list = [GridTokens(grid_labels, dimensionality=dim, max_power=gt['max_power'])]
 
-    grid_labels = ['x_0'] if dim == 0 else [f'x_{i}' for i in range(dim + 1)]
-    grid_tokens = GridTokens(grid_labels, dimensionality=dim, max_power=2)
-    additional_tokens = [grid_tokens] + list(cfg.build_extra_tokens(coords, dim))
+    for spec in cfg.hparams.get('additional_tokens') or []:
+        type_name = spec['type']
+        cls = _TOKEN_REGISTRY.get(type_name)
+        if cls is None:
+            raise ValueError(
+                f"Unknown additional_tokens type {type_name!r}; "
+                f"expected one of {tuple(_TOKEN_REGISTRY)}"
+            )
+        kwargs = dict(spec.get('kwargs') or {})
+        # YAML lists -> tuples where the EPDE class expects a tuple.
+        if 'freq' in kwargs and isinstance(kwargs['freq'], list):
+            kwargs['freq'] = tuple(kwargs['freq'])
+        kwargs.setdefault('dimensionality', dim)
+        pool.append(cls(**kwargs))
 
-    search = EpdeSearch(
-        use_solver=False,
-        multiobjective_mode=True,
-        boundary=boundary,
+    pool.extend(list(cfg.build_extra_tokens(coords, dim)))
+    return pool
+
+
+def _construct_search(cfg: 'SystemCfg', coords, pipeline_kwargs: dict) -> EpdeSearch:
+    """Instantiate EpdeSearch from cfg.hparams['search'] + pipeline_kwargs."""
+    sh = cfg.hparams['search']
+    return EpdeSearch(
+        use_solver=sh['use_solver'],
+        multiobjective_mode=sh['multiobjective_mode'],
+        boundary=_boundary_for(coords),
         coordinate_tensors=coords,
-        verbose_params={'show_iter_idx': True},
-        device='cuda',
+        verbose_params=sh['verbose'],
+        device=sh['device'],
         **pipeline_kwargs,
     )
-    search.set_preprocessor(default_preprocessor_type='FD', preprocessor_kwargs={})
 
-    early_stop_cb = _build_truth_match_callback(cfg) if cfg.early_stop_on_truth else None
-    search.set_moeadd_params(population_size=16, training_epochs=5,
-                             early_stopping_callback=early_stop_cb)
 
+def _configure_preprocessor(search: EpdeSearch, cfg: 'SystemCfg') -> None:
+    pp = cfg.hparams['preprocessor']
+    search.set_preprocessor(default_preprocessor_type=pp['type'],
+                            preprocessor_kwargs=pp.get('kwargs') or {})
+
+
+def _configure_moeadd(search: EpdeSearch, cfg: 'SystemCfg') -> None:
+    mo = cfg.hparams['moeadd']
+    early_stop_cb = _build_truth_match_callback(cfg) if mo.get('early_stop_on_truth') else None
+    search.set_moeadd_params(
+        population_size=mo['population_size'],
+        training_epochs=mo['training_epochs'],
+        early_stopping_callback=early_stop_cb,
+    )
+
+
+def _run_fit(search: EpdeSearch, cfg: 'SystemCfg', data, variable_names,
+             dim: int, additional_tokens: list) -> None:
+    f = cfg.hparams['fit']
+    max_deriv_order = f.get('max_deriv_order')
+    if max_deriv_order is None:
+        # ODE (dim=0) -> (2,); 1+1D PDE -> (2, 4); 2+1D PDE -> (2, 4, 4).
+        max_deriv_order = (2,) + (4,) * dim
+    else:
+        max_deriv_order = tuple(max_deriv_order)
+    fma = f['equation_factors_max_number']
     search.fit(
         data=data,
         variable_names=variable_names,
         max_deriv_order=max_deriv_order,
         derivs=None,
-        equation_terms_max_number=10,
-        data_fun_pow=cfg.data_fun_pow,
-        deriv_fun_pow=2,
+        equation_terms_max_number=f['equation_terms_max_number'],
+        data_fun_pow=f['data_fun_pow'],
+        deriv_fun_pow=f['deriv_fun_pow'],
         additional_tokens=additional_tokens,
-        equation_factors_max_number={'factors_num': [1, 2], 'probas': [0.65, 0.35]},
-        eq_sparsity_interval=(1e-5, 1e0),
-        fourier_layers=False,
+        equation_factors_max_number={
+            'factors_num': fma['factors_num'],
+            'probas': fma['probas'],
+        },
+        eq_sparsity_interval=tuple(f['eq_sparsity_interval']),
+        fourier_layers=f['fourier_layers'],
     )
+
+
+def build_search(cfg: 'SystemCfg', pipeline_kwargs: dict) -> EpdeSearch:
+    """Universal EPDE search builder.
+
+    Thin orchestrator: delegates token-pool assembly, EpdeSearch
+    construction, preprocessor / MOEA/D configuration, and the ``.fit``
+    call to dedicated helpers. Every hyperparameter lives in
+    ``cfg.hparams`` (loaded from ``configs/defaults.yaml`` + per-system
+    overrides); only the pipeline_kwargs (``use_pic``, ``fitness_cls``,
+    ``sparsity_cls``) are passed in directly so the LEGACY vs NEW
+    selection can vary per-rep without touching the YAML.
+    """
+    coords, data, variable_names, dim = cfg.load_data()
+    additional_tokens = _build_token_pool(cfg, coords, dim)
+    search = _construct_search(cfg, coords, pipeline_kwargs)
+    _configure_preprocessor(search, cfg)
+    _configure_moeadd(search, cfg)
+    _run_fit(search, cfg, data, variable_names, dim, additional_tokens)
     return search
 
 

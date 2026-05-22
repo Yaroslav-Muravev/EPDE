@@ -18,6 +18,8 @@ from epde.structure.structure_template import check_uniqueness
 from epde.supplementary import filter_powers
 from epde.operators.utils.template import CompoundOperator, add_base_param_to_operator
 
+from epde import _loop_stats
+
 
 from epde.decorators import HistoryExtender, ResetEquationStatus
 
@@ -62,17 +64,43 @@ class EquationMutation(CompoundOperator):
     def apply(self, objective : Equation, arguments : dict):
         self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
 
-        # term_idx = np.random.choice(range(len(objective.structure)))
-        # objective.structure[term_idx] = self.suboperators['mutation'].apply(objective=(term_idx, objective),
-        #                                                                     arguments=subop_args['mutation'])
-        # objective.structure[term_idx].reset_saved_state()
         equation = deepcopy(objective)
-        for _ in range(10):
+
+        # Phase 1 -- per-term Bernoulli term-replace via the ``mutation``
+        # sub-operator (TermMutation). Restores the pre-aaea0f4 design
+        # that the JSON defaults still reflect (r_mutation = 0.6 was
+        # vestigial after that commit silently replaced term-replace with
+        # term-add). Without this phase mature chromosomes spin on
+        # add_random_term no-ops once they reach the terms_number cap
+        # and structural exploration collapses to crossover alone.
+        # Skip ``n_immutable`` head terms so the right-part anchor and
+        # any mandatory_family terms survive across mutations.
+        r_mutation = self.params['r_mutation']
+        replace_attempts = 0
+        mutable_count = max(1, len(equation.structure) - equation.n_immutable)
+        for term_idx in range(equation.n_immutable, len(equation.structure)):
+            if np.random.uniform(0, 1) <= r_mutation:
+                replace_attempts += 1
+                self.suboperators['mutation'].apply(
+                    objective=(term_idx, equation),
+                    arguments=subop_args['mutation'],
+                )
+        _loop_stats.record('EquationMutation.replace_terms',
+                           replace_attempts, mutable_count)
+
+        # Phase 2 -- bounded term-add. Two caps apply: ``n_added_terms``
+        # (per-call ceiling, default 5 per JSON) and the
+        # ``terms_number`` metaparameter (chromosome-wide ceiling,
+        # enforced inside ``add_random_term``). Either cap-hit or pool
+        # exhaustion breaks the loop -- canonical structure-dedup
+        # contract.
+        n_added = int(self.params['n_added_terms'])
+        add_attempts = 0
+        for _ in range(n_added):
+            add_attempts += 1
             if not equation.add_random_term():
-                # Either ``terms_number`` reached or the pool ran out of
-                # uniques. Either way, further attempts would no-op or
-                # risk introducing a duplicate downstream -- stop here.
                 break
+        _loop_stats.record('EquationMutation.add_terms', add_attempts, n_added)
 
         assert len(equation.terms_labels) == len(equation.structure)
 
@@ -134,16 +162,30 @@ class TermMutation(CompoundOperator):
         # the equation OR no actual change vs the previous term. Cap the
         # retries so a tight token pool can't deadlock the optimizer (same
         # hazard fixed in ``enforce_rps_uniqueness`` / ``simplify_equation``).
+        # On cap-hit, revert to the pre-mutation term: silently committing a
+        # duplicate or no-op violates the structure-dedup rule and lets
+        # population diversity drift unobservably.
         max_iter = 100
+        attempts = 0
+        hit_cap = True
         for _ in range(max_iter):
+            attempts += 1
             signatures = {t.factors_labels for t in equation.structure}
             duplicate = len(signatures) != len(equation.structure)
             unchanged = equation.structure[term_idx].factors_labels == temp.factors_labels
             if not (duplicate or unchanged):
+                hit_cap = False
                 break
             equation.structure[term_idx].randomize()
             equation.structure[term_idx].reset_saved_state()
             equation._invalidate_label_cache()
+        if hit_cap:
+            equation.structure[term_idx] = temp
+            equation._invalidate_label_cache()
+        _loop_stats.record(
+            'TermMutation.unique_term' + ('.FAIL' if hit_cap else ''),
+            attempts, max_iter,
+        )
         return equation.structure[term_idx]
 
     def use_default_tags(self):
@@ -184,7 +226,9 @@ class TermParameterMutation(CompoundOperator):
         # Cap the retry loop so a constrained token pool can't deadlock
         # the optimizer (same hazard fixed in ``enforce_rps_uniqueness``).
         max_iter = 100
+        attempts = 0
         for _ in range(max_iter):
+            attempts += 1
             term = equation.structure[term_idx]
             for factor in term.structure:
                 if term_idx == equation.target_idx:
@@ -212,6 +256,7 @@ class TermParameterMutation(CompoundOperator):
             signatures = {t.factors_labels for t in equation.structure}
             if len(signatures) == len(equation.structure):
                 break
+        _loop_stats.record('TermParameterMutation.unique', attempts, max_iter)
         term.reset_saved_state()
         return term
     
@@ -224,7 +269,7 @@ def get_basic_mutation(mutation_params):
 
     term_mutation = TermMutation([])
 
-    equation_mutation = EquationMutation(['r_mutation', 'type_probabilities'])
+    equation_mutation = EquationMutation(['r_mutation', 'n_added_terms', 'type_probabilities'])
     add_kwarg_to_operator(operator = equation_mutation)
     
     metaparameter_mutation = MetaparameterMutation(['std', 'mean'])

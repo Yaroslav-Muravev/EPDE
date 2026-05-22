@@ -1,0 +1,51 @@
+# Shared defaults inherited by every per-system config.
+# Per-system YAMLs deep-merge on top of this (lists are replaced, not
+# concatenated). Block layout mirrors EpdeSearch / set_preprocessor /
+# set_moeadd_params / search.fit() boundaries.
+
+search:
+  use_solver: false
+  multiobjective_mode: true
+  device: cuda
+  verbose:
+    show_iter_idx: true
+
+preprocessor:
+  type: FD
+  kwargs: {}
+
+moeadd:
+  population_size: 16
+  training_epochs: 5
+  # Stop MOEA/D as soon as a Pareto-0 candidate canonically matches the
+  # system's truth_tokens. Pure time-saver; discovery_epoch is still
+  # recorded. Set to false for apples-to-apples runtime comparison.
+  early_stop_on_truth: false
+
+grid_tokens:
+  max_power: 2
+
+# YAML-declared additional tokens applied to every system's search.
+# Each entry: `type` names a class registered in thesis_runner._TOKEN_REGISTRY,
+# `kwargs` are forwarded to the constructor along with `dimensionality=dim`
+# so the same spec works for ODE (dim=0) and PDE (dim>=1). Per-system
+# YAMLs can replace this list wholesale; custom tokens that need Python
+# callables stay in the adapter's build_extra_tokens and are concatenated
+# on top of this list.
+additional_tokens:
+  - type: TrigonometricTokens
+    kwargs:
+      freq: [1.99999999, 2.00000001]   # narrow window around 2.0 (matches the prior vdp/ode setting)
+
+fit:
+  equation_terms_max_number: 10
+  data_fun_pow: 3
+  deriv_fun_pow: 2
+  equation_factors_max_number:
+    factors_num: [1, 2]
+    probas: [0.65, 0.35]
+  eq_sparsity_interval: [1.0e-5, 1.0]
+  fourier_layers: false
+  # null -> derived as (2,) + (4,) * dim
+  # ODE (dim=0) -> (2,); 1+1D PDE -> (2, 4); 2+1D PDE -> (2, 4, 4).
+  max_deriv_order: null

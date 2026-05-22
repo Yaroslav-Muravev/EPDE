@@ -396,8 +396,8 @@ class TokenFamily(object):
                     generated_token.use_grids_cache()
                 generated_token.scaled = False
                 _ = generated_token.evaluate()
-                print(generated_token.cache_label)
-                if generated_token.cache_label not in global_var.tensor_cache.memory_default['numpy'].keys():
+                print(generated_token.structural_label)
+                if generated_token.structural_label not in global_var.tensor_cache.memory_default['numpy'].keys():
                     raise KeyError('Generated token somehow was not stored in cache.')
 
 

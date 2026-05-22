@@ -186,8 +186,8 @@ class L2LRFitness(CompoundOperator):
 
         fitness_value = rl_error
 
-        # if force_out_of_place:
-        #     return fitness_value
+        if force_out_of_place:
+            return fitness_value
 
         objective.aic = None
         objective.aic_calculated = True
@@ -211,8 +211,8 @@ class L2LRFitness(CompoundOperator):
                 cv = (std ** 2) / (mu ** 2)
             total_lr = sum(cv) / len(data_shape)
 
-        if force_out_of_place:
-            return fitness_value * total_lr
+        # if force_out_of_place:
+        #     return fitness_value * total_lr
 
         objective.fitness_calculated = True
         objective.fitness_value = fitness_value

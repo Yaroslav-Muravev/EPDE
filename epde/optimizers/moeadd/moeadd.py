@@ -244,7 +244,7 @@ class ParetoLevels(object):
     def delete_point(self, point):
         """
         Deletion of a candidate solution point from the pareto levels and the population list.
-        
+
         Args:
             point (`MOEADDSolution`): The point, removed from the candidate solutions pool.
 
@@ -254,14 +254,32 @@ class ParetoLevels(object):
         new_levels = []
         population_cleared = []
         point_system = point.equations_labels
+        deleted_count = 0
         for level in self.levels:
             temp = []
             for element in level:
                 if element.equations_labels != point_system:
                     temp.append(element)
                     population_cleared.append(element)
+                else:
+                    deleted_count += 1
             if not len(temp) == 0:
                 new_levels.append(temp)
+
+        # Defensive: ``delete_point`` is a single-point API but the
+        # equations_labels match is structural -- two distinct SoEq
+        # instances CAN share the same labels (same structure, different
+        # internal weight history) and both would be silently removed.
+        # See audit D5. The history-based uniqueness guard in
+        # OffspringUpdater is supposed to prevent this, but loud failure
+        # is preferable to silent population shrinkage.
+        if deleted_count != 1:
+            raise RuntimeError(
+                f"ParetoLevels.delete_point: expected to remove exactly 1 "
+                f"point with equations_labels={point_system!r}, removed "
+                f"{deleted_count}. The population contains duplicate "
+                f"chromosomes despite history-based uniqueness guards."
+            )
 
         if len(population_cleared) != sum([len(level) for level in new_levels]):
             print(len(population_cleared), len(self.population), sum([len(level) for level in new_levels]))
@@ -636,7 +654,14 @@ class MOEADDOptimizer(object):
             for epoch_idx in np.arange(epochs):
                 if global_var.verbose.show_iter_idx:
                     print(f'Multiobjective optimization : {epoch_idx}-th epoch.')
-                for weight_idx in np.arange(len(self.weights)):
+                # Shuffle sector order each epoch. The prior fixed
+                # 0..N-1 traversal gave early sectors a population
+                # advantage every epoch (their offspring entered the
+                # global Pareto pool before late sectors saw the
+                # evolved chromosomes). See audit D6. Reproducibility
+                # is preserved because np.random is seeded by the
+                # caller via ``_set_seeds`` before optimization.
+                for weight_idx in np.random.permutation(len(self.weights)):
                     if global_var.verbose.show_iter_idx:
                         print(f'During MO : processing {weight_idx}-th weight.')
                     sp_kwargs = self.form_processer_args(weight_idx)

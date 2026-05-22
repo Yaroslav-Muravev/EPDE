@@ -19,6 +19,8 @@ from epde.operators.multiobjective.mutations import get_basic_mutation
 from epde.structure.main_structures import SoEq
 from copy import deepcopy
 
+from epde import _loop_stats
+
 
 def penalty_based_intersection(sol_obj, weight, ideal_obj,
                                penalty_factor=1., obj_normalizer=None) -> float:
@@ -63,8 +65,22 @@ def population_to_sectors(population, weights):
 def decomposition_based_worst(solutions: list, weights: np.ndarray, best_obj: np.ndarray,
                               penalty_factor: float = 1., obj_normalizer=None):
     '''
-    Algorithm 3 from the MOEA/DD paper (Li, Deb, Zhang, 2015).
-    Finds the worst solution among a given set using decomposition-based selection.
+    Decomposition-based worst-solution finder. Returns argmax PBI over the
+    most-crowded subregion within ``solutions``; ties on niche count are
+    broken by sum-PBI per paper Eq. (7).
+
+    Used as a helper for two branches of Algorithm 4 in the MOEA/DD paper
+    (Li, Deb, Zhang, Kwong, 2015):
+      * ``PopulationUpdater`` case ``l = 1`` -- called with the full
+        population; equivalent to ``LOCATE_WORST`` (Algorithm 5) since
+        every solution lives on the single front.
+      * ``PopulationUpdater`` case ``l > 1, |F_l| > 1, |Phi^h| > 1`` --
+        called with ONLY the last front ``F_l``. This is a deliberate
+        EPDE deviation from Algorithm 4 line 18, which says
+        ``argmax_{x in Phi^h} g^pbi(x|w^h, z*)`` over the FULL subregion
+        (potentially containing elite F_1..F_{l-1} solutions). Restricting
+        to F_l preserves convergence elites at the cost of some selection
+        pressure within Phi^h; see audit notes for the rationale.
     '''
     domain_solutions = population_to_sectors(solutions, weights)
     most_crowded_count = max(len(domain) for domain in domain_solutions)
@@ -167,18 +183,29 @@ class PopulationUpdater(CompoundOperator):
                     worst_solution = locate_pareto_worst(levels_obj, self_args['weights'],
                                                          self_args['best_obj'], self.params['PBI_penalty'])
             else:
-                # Algorithm 4, Case 3: multiple solutions on last front
+                # Algorithm 4, Case 3: multiple solutions on last front F_l.
+                # DEVIATION from the paper: the crowded-subregion search and
+                # the worst-PBI argmax are both restricted to F_l, NOT to
+                # the full Phi^h as Algorithm 4 line 18 specifies. The
+                # paper would let us eliminate an elite F_1 solution if it
+                # happened to have the largest PBI inside the crowded
+                # subregion; we prefer to keep the elite and only churn
+                # the last-front candidates. See ``decomposition_based_worst``
+                # docstring for the full rationale.
                 last_front = levels_obj.levels[-1]
                 last_front_by_domains = population_to_sectors(last_front, self_args['weights'])
                 most_crowded_count = max(len(d) for d in last_front_by_domains)
 
                 if most_crowded_count > 1:
-                    # Most crowded subregion has >1 solutions — remove worst PBI there
+                    # Most crowded F_l subregion has >1 solutions -- drop
+                    # the worst-PBI one among F_l members of that subregion.
                     worst_solution = decomposition_based_worst(last_front, self_args['weights'],
                                                                self_args['best_obj'], self.params['PBI_penalty'],
                                                                levels_obj.normalizer)
                 else:
-                    # All subregions have size 1 — find worst in whole population
+                    # Every F_l solution sits alone in its subregion: fall
+                    # back to NDL-aware LOCATE_WORST over the full P'
+                    # (Algorithm 5).
                     worst_solution = locate_pareto_worst(levels_obj, self_args['weights'],
                                                          self_args['best_obj'], self.params['PBI_penalty'])
 
@@ -367,7 +394,10 @@ class OffspringUpdater(CompoundOperator):
             #         self.suboperators['right_part_selector'].apply(objective=temp_offspring,
             #                                                        arguments=subop_args['right_part_selector'])
             #         term_replaced = is_rps_in_other_equation(temp_offspring)
+            total_attempts = 0
+            hit_offspring_cap = False
             while True:
+                total_attempts += 1
                 temp_offspring = self.suboperators['chromosome_mutation'].apply(objective=temp_offspring,
                                                                                 arguments=subop_args['chromosome_mutation'])
                 temp_offspring.reset_state(True)
@@ -388,6 +418,7 @@ class OffspringUpdater(CompoundOperator):
                         print(temp_offspring.obj_fun)
                     break
                 if replaced == offspring_attempt_limit:
+                    hit_offspring_cap = True
                     if global_var.verbose.candidate_objectives:
                         print("Could not generate unique offspring")
                     break
@@ -398,6 +429,12 @@ class OffspringUpdater(CompoundOperator):
                     # print("Could not generate unique offspring")
                     # break
                 attempt += 1
+            # Track total iters and cap-hits separately for the success vs failure paths.
+            theoretical_cap = (offspring_attempt_limit + 1) * (mutation_attempt_limit + 1)
+            _loop_stats.record(
+                'OffspringUpdater.unique_offspring' + ('.FAIL' if hit_offspring_cap else ''),
+                total_attempts, theoretical_cap,
+            )
         return objective
     
 def get_pareto_levels_updater(right_part_selector : CompoundOperator, chromosome_fitness : CompoundOperator,
@@ -441,6 +478,7 @@ class InitialParetoLevelSorting(CompoundOperator):
         self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
 
         if len(objective.population) == 0:
+            uniqueness_attempt_limit = self.params['uniqueness_attempt_limit']
             for idx, candidate in enumerate(objective.unplaced_candidates):
                 candidate.reset_state(True)
                 # SoEqRightPartSelector handles cross-equation RPS
@@ -449,12 +487,36 @@ class InitialParetoLevelSorting(CompoundOperator):
                                                                 arguments = subop_args['right_part_selector'])
 
                 system = candidate.equations_labels
+                attempts = 0
+                hit_cap = False
                 while system in objective.history:
+                    if attempts >= uniqueness_attempt_limit:
+                        hit_cap = True
+                        break
+                    attempts += 1
                     candidate.create()
                     candidate.reset_state(True)
                     self.suboperators['right_part_selector'].apply(objective=candidate,
                                                                    arguments=subop_args['right_part_selector'])
                     system = candidate.equations_labels
+                _loop_stats.record(
+                    'InitialParetoLevelSorting.unique_candidate' + ('.FAIL' if hit_cap else ''),
+                    attempts, uniqueness_attempt_limit,
+                )
+                if hit_cap:
+                    # Initial population must be duplicate-free for MOEA/D's
+                    # per-sector uniqueness invariant. If the candidate pool
+                    # is too small to satisfy pop_size, fail loud rather than
+                    # silently corrupt the initial Pareto layer.
+                    raise RuntimeError(
+                        f"InitialParetoLevelSorting: could not generate a unique "
+                        f"initial candidate after {uniqueness_attempt_limit} attempts "
+                        f"(candidate index {idx}, {len(objective.history)} unique "
+                        f"systems already placed). The search space appears smaller "
+                        f"than the requested population. Reduce pop_size, widen the "
+                        f"token pool, or raise InitialParetoLevelSorting's "
+                        f"'uniqueness_attempt_limit' parameter."
+                    )
                 self.suboperators['chromosome_fitness'].apply(objective=candidate,
                                                               arguments=subop_args['chromosome_fitness'])
                 objective.history.add(system)

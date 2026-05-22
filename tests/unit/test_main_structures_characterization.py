@@ -207,12 +207,11 @@ class TestEquationLabelProperties:
 # ---------------------------------------------------------------------------
 
 class TestRenameAliases:
-    def test_term_alias_factors_labels(self, term):
-        assert term.factors_labels == term.term_label
-
-    def test_term_alias_factors_labels_without_power(self, term):
-        assert term.factors_labels_without_power == term.term_label_without_power
-
+    # Term-level term_label / term_label_without_power aliases were
+    # removed in the R3 cleanup (sleepy-swinging-acorn audit) -- all
+    # callers route through factors_labels(_without_power) directly.
+    # SoEq still aliases equations_labels(_without_power) to keep the
+    # MOEA/D-side history-membership API stable.
     def test_soeq_alias_equations_labels(self, soeq):
         assert soeq.equations_labels == soeq.terms_labels
 

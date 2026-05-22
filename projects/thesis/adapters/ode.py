@@ -1,9 +1,12 @@
-"""Data adapter for Forced Damped Oscillator. See configs/ode.yaml."""
+"""Data adapter for Forced Damped Oscillator. See configs/ode.yaml.
+
+The narrow ``TrigonometricTokens(freq=2 +/- 1e-8)`` previously declared
+here is now in ``configs/defaults.yaml`` so every system shares the
+same trig search space; this adapter only loads the raw signal.
+"""
 
 import os
 import numpy as np
-
-from epde import TrigonometricTokens
 
 _DATA_DIR = os.path.abspath(os.path.join(
     os.path.dirname(__file__), '..', '..', 'pic', 'data', 'ode'
@@ -15,7 +18,3 @@ def load_data():
     t = np.arange(0., step * n, step)
     data = np.load(os.path.join(_DATA_DIR, 'ode_data.npy'))
     return (t,), [data], ['u'], 0
-
-
-def build_extra_tokens(coords, dim):
-    return [TrigonometricTokens(freq=(2 - 1e-8, 2 + 1e-8), dimensionality=dim)]

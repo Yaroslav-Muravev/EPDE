@@ -39,10 +39,12 @@ from thesis_runner import (  # noqa: E402
 def _available_systems() -> list:
     if not os.path.isdir(CONFIGS_DIR):
         return []
+    # ``defaults.yaml`` is the shared baseline that load_config merges
+    # under every per-system config; it's not itself a runnable system.
     return sorted(
         os.path.splitext(f)[0]
         for f in os.listdir(CONFIGS_DIR)
-        if f.endswith('.yaml')
+        if f.endswith('.yaml') and f != 'defaults.yaml'
     )
 
 
