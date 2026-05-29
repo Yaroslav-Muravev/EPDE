@@ -7,3 +7,9 @@ truth_equations:
   - "10.0 * v{power: 1.0} + -10.0 * u{power: 1.0} = du/dx0{power: 1.0}"
   - "28.0 * u{power: 1.0} + -1.0 * u{power: 1.0} * w{power: 1.0} + -1.0 * v{power: 1.0} = dv/dx0{power: 1.0}"
   - "1.0 * u{power: 1.0} * v{power: 1.0} + -2.6666666666666665 * w{power: 1.0} = dw/dx0{power: 1.0}"
+
+# Lorenz is a 3-equation system; the (discrepancy, complexity)^3
+# objective space needs more weight vectors than the
+# auto-bumped 32 to cover per-equation trade-offs. Override to 48.
+moeadd:
+  population_size: 48

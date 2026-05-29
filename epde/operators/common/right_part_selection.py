@@ -17,7 +17,7 @@ from epde.decorators import HistoryExtender
 from epde.structure.main_structures import Term, Equation
 from epde.supplementary import GramSetup, retry_until_unique
 from epde import _loop_stats
-    
+
 class EqRightPartSelector(CompoundOperator):
     '''
     
@@ -358,7 +358,7 @@ class RandomRHPSelector(CompoundOperator):
         self._tags = {'equation right part selection', 'gene level', 'contains suboperators', 'inplace'}
 
 
-def _scrub_conflicting_terms(equation: Equation, fixed_rps, *, max_iter: int = 100,
+def _scrub_conflicting_terms(equation: Equation, fixed_rps, *, max_iter: int = 2000,
                               skip_idx=None) -> bool:
     """Replace any term in ``equation.structure`` whose factor signature is a
     superset of one of the ``fixed_rps`` signatures (each a ``frozenset`` of
@@ -455,7 +455,7 @@ class SoEqRightPartSelector(CompoundOperator):
         for eq_idx, equation in enumerate(equations):
             other_rps = [rs for rs in rps_signatures[:eq_idx] if rs is not None]
             if other_rps:
-                _scrub_conflicting_terms(equation, other_rps, max_iter=100)
+                _scrub_conflicting_terms(equation, other_rps)
             eq_selector.apply(objective=equation, arguments=eq_args)
             try:
                 rps_signatures[eq_idx] = equation.structure[
@@ -467,7 +467,7 @@ class SoEqRightPartSelector(CompoundOperator):
         # RPS, so re-scrub against the full set (skipping own target) and
         # re-select when scrubbing changes the structure. Iterates until
         # a full pass yields no changes.
-        max_passes = 5
+        max_passes = 50
         passes_used = 0
         for _ in range(max_passes):
             passes_used += 1
@@ -479,7 +479,7 @@ class SoEqRightPartSelector(CompoundOperator):
                     continue
                 target_idx = getattr(equation, 'target_idx', None)
                 changed = _scrub_conflicting_terms(
-                    equation, other_rps, max_iter=100, skip_idx=target_idx,
+                    equation, other_rps, skip_idx=target_idx,
                 )
                 if not changed:
                     continue

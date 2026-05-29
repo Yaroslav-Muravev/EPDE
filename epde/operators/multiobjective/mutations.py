@@ -26,11 +26,20 @@ from epde.decorators import HistoryExtender, ResetEquationStatus
 
 class SystemMutation(CompoundOperator):
     key = 'SystemMutation'
-    def apply(self, objective : SoEq, arguments : dict): # TODO: add setter for best_individuals & worst individuals 
-        self_args, subop_args = self.parse_suboperator_args(arguments = arguments)    
-    
-        altered_objective = deepcopy(objective)
-        
+    def apply(self, objective : SoEq, arguments : dict): # TODO: add setter for best_individuals & worst individuals
+        self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
+
+        # The only caller is ``OffspringUpdater.apply``, which pops the
+        # offspring from ``unplaced_candidates`` (no other refs) and feeds
+        # it here via ``chromosome_mutation``. Mutating in place is
+        # observationally equivalent to deepcopying first -- the caller's
+        # alias is the only handle on this SoEq, and the suboperators
+        # (EquationMutation, MetaparameterMutation) were already updated
+        # to mutate in place. Saves a full SoEq deepcopy per offspring
+        # iteration (heaviest single deepcopy in the multi-objective hot
+        # path).
+        altered_objective = objective
+
         eqs_keys = altered_objective.vals.equation_keys; params_keys = altered_objective.vals.params_keys
         # eq_key = np.random.choice(eqs_keys)
         # altered_eq = self.suboperators['equation_mutation'].apply(altered_objective.vals[eq_key],
@@ -64,7 +73,11 @@ class EquationMutation(CompoundOperator):
     def apply(self, objective : Equation, arguments : dict):
         self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
 
-        equation = deepcopy(objective)
+        # SystemMutation.apply already deepcopied the enclosing SoEq, so
+        # ``objective`` is already a fresh clone -- mutating in place is
+        # safe and saves a per-call SoEq-deep deepcopy of the equation
+        # (was ~5ms per call, ~5000 calls per lv_new rep).
+        equation = objective
 
         # Phase 1 -- per-term Bernoulli term-replace via the ``mutation``
         # sub-operator (TermMutation). Restores the pre-aaea0f4 design
@@ -153,9 +166,18 @@ class TermMutation(CompoundOperator):
         self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
 
         term_idx, equation = objective
-        temp = deepcopy(equation.structure[term_idx])
-        equation.structure[term_idx].randomize()
-        equation.structure[term_idx].reset_saved_state()
+        term = equation.structure[term_idx]
+        # ``randomize()`` REPLACES ``term.structure`` with a freshly
+        # built list of fresh ``Factor`` instances (see
+        # ``Term.randomize`` at main_structures.py:203). The old list
+        # survives as ``original_structure`` here -- no deepcopy needed,
+        # the alias is intentional. Same trick as the ``add_random_term``
+        # optimization. Saves a ~10ms Term deepcopy on every replace_terms
+        # iter (was the largest remaining mutation-path deepcopy cost).
+        original_structure = term.structure
+        original_labels = term.factors_labels
+        term.randomize()
+        term.reset_saved_state()
         equation._invalidate_label_cache()
 
         # Re-randomize while the mutation produced a duplicate term within
@@ -172,21 +194,27 @@ class TermMutation(CompoundOperator):
             attempts += 1
             signatures = {t.factors_labels for t in equation.structure}
             duplicate = len(signatures) != len(equation.structure)
-            unchanged = equation.structure[term_idx].factors_labels == temp.factors_labels
+            unchanged = term.factors_labels == original_labels
             if not (duplicate or unchanged):
                 hit_cap = False
                 break
-            equation.structure[term_idx].randomize()
-            equation.structure[term_idx].reset_saved_state()
+            term.randomize()
+            term.reset_saved_state()
             equation._invalidate_label_cache()
         if hit_cap:
-            equation.structure[term_idx] = temp
+            # Revert by restoring the original Factor list. The Term
+            # instance itself is the same one, and only its ``structure``
+            # slot was mutated by randomize() -- restoring that slot
+            # restores its observable identity for downstream consumers
+            # (factors_labels, __eq__ both read ``structure`` live).
+            term.structure = original_structure
+            term.reset_saved_state()
             equation._invalidate_label_cache()
         _loop_stats.record(
             'TermMutation.unique_term' + ('.FAIL' if hit_cap else ''),
             attempts, max_iter,
         )
-        return equation.structure[term_idx]
+        return term
 
     def use_default_tags(self):
         self._tags = {'mutation', 'term level', 'exploration', 'no suboperators'}

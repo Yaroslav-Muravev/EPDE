@@ -20,6 +20,30 @@ from epde.supplementary import calculate_weights, GramSetup
 from epde import _loop_stats
 
 
+def _minmax_normalize_1d(values: np.ndarray) -> np.ndarray:
+    """Rescale a 1-D vector to [-1, 1]. Constant vectors map to zeros."""
+    vmin = values.min()
+    vmax = values.max()
+    if vmax == vmin:
+        return np.zeros_like(values, dtype=float)
+    return 2.0 * (values - vmin) / (vmax - vmin) - 1.0
+
+
+def _minmax_normalize_columns(features: np.ndarray) -> np.ndarray:
+    """Rescale each column of a 2-D feature matrix to [-1, 1].
+    Constant columns map to zeros (no informative variance for L1)."""
+    out = np.empty(features.shape, dtype=float)
+    for j in range(features.shape[1]):
+        col = features[:, j]
+        cmin = col.min()
+        cmax = col.max()
+        if cmax == cmin:
+            out[:, j] = 0.0
+        else:
+            out[:, j] = 2.0 * (col - cmin) / (cmax - cmin) - 1.0
+    return out
+
+
 # class PhysicsInformedLasso(BaseEstimator, RegressorMixin):
 #     """
 #     Physics-Informed Lasso Regression via Coordinate Descent.
@@ -446,6 +470,27 @@ class LASSOSparsity(CompoundOperator):
 
         _, target, features = objective.evaluate(normalize = True, return_val = False)
 
+        # Legacy LASSO step: min-max-rescale target + each feature
+        # column to [-1, 1] before the L1 fit, so the alpha penalty is
+        # comparable across features whose physical magnitudes span
+        # many orders. The downstream ``LinRegBasedCoeffsEquation``
+        # refit (see coeff_calculation.py) re-evaluates the surviving
+        # terms with ``term.evaluate(False)`` to recover physically-
+        # scaled coefficients on un-normalised features. MOEA/D
+        # optimises the LASSO alpha (via the metaparameter mutation),
+        # so we do not need to rescale it here -- the search will
+        # discover effective values for the normalised feature space.
+        try:
+            if features is not None and np.all(np.isfinite(features)):
+                features = _minmax_normalize_columns(features)
+            if target is not None and np.all(np.isfinite(target)):
+                target = _minmax_normalize_1d(target)
+        except Exception:
+            # Defensive: any normalisation hiccup falls through to the
+            # degenerate-features path below rather than aborting the
+            # whole sparsity step.
+            pass
+
         self.g_fun_vals = global_var.grid_cache.g_func[global_var.grid_cache.g_func_mask]
 
         n_features = features.shape[1] if (features is not None and hasattr(features, 'ndim') and features.ndim > 1) else 0
@@ -464,6 +509,12 @@ class LASSOSparsity(CompoundOperator):
         objective.weights_internal_evald = True
         objective.weights_final = np.append([weight for weight in coef if weight != 0], intercept)
         objective.weights_final_evald = True
+        # Flag the equation for the un-normalised LinearRegression refit
+        # performed by ``LinRegBasedCoeffsEquation`` -- see
+        # ``epde/operators/common/coeff_calculation.py``. VWSRSparsity
+        # does NOT set this marker; only the LASSO path opts into the
+        # legacy two-step (min-max LASSO + linreg-on-survivors) flow.
+        objective._legacy_refit_pending = True
         # objective._cached_sw_weights = estimator.cached_weights_
         # Note: _eval_cache is intentionally NOT wiped here. The cache stores
         # (value, target, features) tuples keyed on (normalize, return_val,
@@ -483,8 +534,7 @@ class VWSRSparsity(CompoundOperator):
     Mirrors :class:`LASSOSparsity` but swaps the sklearn ``Lasso`` estimator
     for :class:`PhysicsInformedLasso`, which derives feature-specific L1
     penalties from the squared coefficient of variation of sliding-window
-    fits. Used as the regression step of the "new" pipeline in the EPDE
-    within-platform comparison (thesis Section 4.5).
+    fits. Used as the regression step of the "new" pipeline.
     """
     key = 'VWSRBasedSparsity'
 

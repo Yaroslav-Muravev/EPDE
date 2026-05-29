@@ -199,11 +199,9 @@ class TerminalToken(Token):
         # ``_cache_label`` / ``_structural_label`` /
         # ``_structural_label_without_power`` slots after delegating
         # here. Numpy in-place index assignment (``factor.params[i] =
-        # X``) bypasses both setters; the four known offender sites
-        # were converted to ``factor.set_param(...)`` in the R1+A6
-        # consolidation. New writers MUST route through one of these
-        # two paths or call ``factor._invalidate_label_cache()``
-        # explicitly. See sleepy-swinging-acorn audit R1+A6.
+        # X``) bypasses both setters. New writers MUST route through
+        # one of these two paths or call
+        # ``factor._invalidate_label_cache()`` explicitly.
         assert len(params) == self._number_params, "Input array has incorrect size"
         self._params = np.array(params, dtype=float)
         self._fix_val = False

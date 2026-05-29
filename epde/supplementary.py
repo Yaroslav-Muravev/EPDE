@@ -25,6 +25,35 @@ from numpy.lib.stride_tricks import sliding_window_view
 from epde import _loop_stats
 
 
+# Default behaviour for GramSetup's sliding-window CV: ``True`` treats
+# each axis as periodic so windows near the boundary wrap around (the
+# last few windows span data[end-k:end] + data[0:window_size-k]).
+# ``False`` is the legacy linear semantics where the number of windows
+# along an axis is ``N - window_size + 1`` and no wrap occurs.
+_DEFAULT_CIRCULAR_CV = True
+
+
+def _windowed_take(arr: np.ndarray, dim: int, window_size: int,
+                    num_horizons: int, step_size: int,
+                    circular: bool) -> np.ndarray:
+    """Return ``sliding_window_view`` along ``dim``, optionally with
+    circular padding so windows near the boundary wrap to the start.
+
+    Caller computes ``num_horizons`` (the number of valid start positions
+    along ``dim``) and ``step_size`` (subsampling stride). Under circular
+    mode, ``num_horizons == arr.shape[dim]`` and the input is padded by
+    ``window_size - 1`` samples copied from the start at the end via
+    ``np.pad(..., mode='wrap')``. Under linear mode, ``num_horizons ==
+    arr.shape[dim] - window_size + 1`` and no padding is applied.
+    """
+    if circular:
+        pad = [(0, 0)] * arr.ndim
+        pad[dim] = (0, window_size - 1)
+        arr = np.pad(arr, pad, mode='wrap')
+    windows = sliding_window_view(arr, window_shape=window_size, axis=dim)
+    return windows.take(indices=range(0, num_horizons, step_size), axis=dim)
+
+
 def retry_until_unique(*, predicate, mutate, max_iter: int, stats_name: str):
     """Bounded retry loop: keep mutating a candidate until ``predicate`` holds.
 
@@ -348,10 +377,16 @@ def filter_powers(gene):
     gene_filtered = []
 
     for token_idx in range(len(gene)):
-        total_power = sum([factor.param(name = 'power') for factor in gene 
+        total_power = sum([factor.param(name = 'power') for factor in gene
                            if gene[token_idx].partial_equlaity(factor)])#gene.count(gene[token_idx])
-        powered_token = copy.deepcopy(gene[token_idx])
-        
+        # ``copy_for_power_update`` is a Factor-specific cheap clone --
+        # only ``_params`` gets its own storage (set_param writes to it
+        # in place); the rest of the factor's slots are aliased. Was
+        # ~200μs per ``copy.deepcopy(factor)`` and ran 237k times per
+        # lv_new rep -- the largest residual deepcopy after the
+        # mutation/crossover round.
+        powered_token = gene[token_idx].copy_for_power_update()
+
         power_idx = np.inf
         for param_idx, param_info in powered_token.params_description.items():
             if param_info['name'] == 'power':
@@ -499,7 +534,8 @@ class GramSetup:
     corresponding sub-columns.
     """
 
-    def __init__(self, X, y, sample_weights, grid_shape):
+    def __init__(self, X, y, sample_weights, grid_shape,
+                 circular_cv: bool = _DEFAULT_CIRCULAR_CV):
         n_samples = X.shape[0]
         # Always augment X with the intercept column so callers can toggle
         # ``fit_intercept`` via the active mask's last bit rather than
@@ -517,16 +553,18 @@ class GramSetup:
 
         for dim in range(len(grid_shape)):
             window_size = grid_shape[dim] // 2
-            num_horizons = window_size + 1
+            # Circular: every position along the axis is a valid window
+            # start (the input is virtually periodic); linear: only the
+            # first ``window_size + 1`` positions yield a full window.
+            num_horizons = grid_shape[dim] if circular_cv else window_size + 1
             step_size = max(1, num_horizons // 30)
 
-            X_windows = sliding_window_view(X_grid, window_shape=window_size, axis=dim)
-            y_windows = sliding_window_view(y_grid, window_shape=window_size, axis=dim)
-            w_windows = sliding_window_view(sample_weights_grid, window_shape=window_size, axis=dim)
-
-            X_windows = X_windows.take(indices=range(0, num_horizons, step_size), axis=dim)
-            y_windows = y_windows.take(indices=range(0, num_horizons, step_size), axis=dim)
-            w_windows = w_windows.take(indices=range(0, num_horizons, step_size), axis=dim)
+            X_windows = _windowed_take(X_grid, dim, window_size,
+                                       num_horizons, step_size, circular_cv)
+            y_windows = _windowed_take(y_grid, dim, window_size,
+                                       num_horizons, step_size, circular_cv)
+            w_windows = _windowed_take(sample_weights_grid, dim, window_size,
+                                       num_horizons, step_size, circular_cv)
 
             X_windows = np.moveaxis(X_windows, dim, 0)
             y_windows = np.moveaxis(y_windows, dim, 0)
@@ -640,7 +678,8 @@ class GramSetup:
         return np.vstack(all_weights)
 
     @classmethod
-    def precompute_super(cls, Z, sample_weights, grid_shape):
+    def precompute_super(cls, Z, sample_weights, grid_shape,
+                          circular_cv: bool = _DEFAULT_CIRCULAR_CV):
         """Build a per-dim super-Gram over ``Z_aug = column_stack(Z, ones)``
         once. Returns an opaque dict consumed by :meth:`from_full` to
         derive per-target GramSetup views via pure slicing.
@@ -654,7 +693,12 @@ class GramSetup:
 
         ``Z`` is shape (n_samples, n_terms); ``sample_weights`` is the
         flat per-sample weight vector; ``grid_shape`` is the same shape
-        ``GramSetup.__init__`` consumes.
+        ``GramSetup.__init__`` consumes. ``circular_cv`` mirrors the
+        ``__init__`` flag -- callers that flow through both paths
+        (PhysicsInformedLasso single-call + EqRPS super-Gram sweep) must
+        keep these values aligned for the per-target views to remain
+        sub-blocks of the super-Gram (the math requires identical window
+        sets across the two passes).
         """
         n_samples, n_terms = Z.shape
         Z_aug = np.hstack([Z, np.ones((n_samples, 1))])
@@ -666,14 +710,13 @@ class GramSetup:
 
         for dim in range(len(grid_shape)):
             window_size = grid_shape[dim] // 2
-            num_horizons = window_size + 1
+            num_horizons = grid_shape[dim] if circular_cv else window_size + 1
             step_size = max(1, num_horizons // 30)
 
-            Z_windows = sliding_window_view(Z_grid, window_shape=window_size, axis=dim)
-            w_windows = sliding_window_view(sw_grid, window_shape=window_size, axis=dim)
-
-            Z_windows = Z_windows.take(indices=range(0, num_horizons, step_size), axis=dim)
-            w_windows = w_windows.take(indices=range(0, num_horizons, step_size), axis=dim)
+            Z_windows = _windowed_take(Z_grid, dim, window_size,
+                                       num_horizons, step_size, circular_cv)
+            w_windows = _windowed_take(sw_grid, dim, window_size,
+                                       num_horizons, step_size, circular_cv)
 
             Z_windows = np.moveaxis(Z_windows, dim, 0)
             w_windows = np.moveaxis(w_windows, dim, 0)

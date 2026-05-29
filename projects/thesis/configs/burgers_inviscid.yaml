@@ -4,3 +4,13 @@
 name: burgers_inviscid
 truth_equations:
   - "-1.0 * u{power: 1.0} * du/dx1{power: 1.0} = du/dx0{power: 1.0}"
+
+# Alternative analytical form: the similarity-solution identity
+# ``u = x * du/dx`` holds for any trajectory of the family
+# ``u(x, t) = x/(t + c)`` that this dataset records. EPDE consistently
+# discovers this characteristic relation (~50 of 90 Pareto-0 solutions
+# across the 30 reps) instead of the PDE form; it is algebraically
+# correct for the dataset and so credits as a valid discovery.
+truth_alternatives:
+  - - "1.0 * u{power: 1.0} = x{power: 1.0, dim: 1.0} * du/dx1{power: 1.0}"
+  - - "0.5 * x{power: 1.0, dim: 0.0} * u{power: 1.0} + -0.5 * x{power: 1.0, dim: 1.0} + 0.0 = du/dx1{power: 1.0} * x{power: 1.0, dim: 1.0}"

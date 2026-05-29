@@ -1,7 +1,20 @@
-# Navier-Stokes (2+1D, coupled PDE system)
+# Navier-Stokes 2D incompressible (cylinder wake, Re=100).
+# Data: projects/pic/data/ns/cylinder_nektar_wake.mat (first 50 snapshots).
 #
-# NOTE: excluded from smoke runs -- runtime is much higher than the rest
-# of the benchmark. Truth equations are TODO until the Re-specific
-# ground-truth pair + continuity is decided.
+# Momentum (u, v): du/dt = -(u·du/dx + v·du/dy) - dp/dx + (1/Re)·Lap(u)
+#                  dv/dt = -(u·dv/dx + v·dv/dy) - dp/dy + (1/Re)·Lap(v)
+# Continuity (p): du/dx + dv/dy = 0  (rewritten as dp/dy form below so
+#                  EPDE has a per-equation target derivative).
+#
+# Axis convention: dx0 = t, dx1 = y, dx2 = x. 1/Re = 0.01.
 name: ns
-truth_equations: []
+truth_equations:
+  - "-1.0 * u{power: 1.0} * du/dx2{power: 1.0} + -1.0 * v{power: 1.0} * du/dx1{power: 1.0} + -1.0 * dp/dx2{power: 1.0} + 0.01 * d^2u/dx2^2{power: 1.0} + 0.01 * d^2u/dx1^2{power: 1.0} = du/dx0{power: 1.0}"
+  - "-1.0 * u{power: 1.0} * dv/dx2{power: 1.0} + -1.0 * v{power: 1.0} * dv/dx1{power: 1.0} + -1.0 * dp/dx1{power: 1.0} + 0.01 * d^2v/dx2^2{power: 1.0} + 0.01 * d^2v/dx1^2{power: 1.0} = dv/dx0{power: 1.0}"
+  - "-1.0 * dv/dx1{power: 1.0} = du/dx2{power: 1.0}"
+
+# NS is a 3-equation system; the (discrepancy, complexity)^3
+# objective space needs more weight vectors than the
+# auto-bumped 32 to cover per-equation trade-offs. Override to 48.
+moeadd:
+  population_size: 48

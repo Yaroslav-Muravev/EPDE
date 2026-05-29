@@ -34,10 +34,54 @@ PIPELINES = ('legacy', 'new')
 DEFAULT_RESULTS_DIR = os.path.join(_THIS_DIR, 'results')
 
 
+def _unique_history_count(rec: dict, rep_path: str) -> int | None:
+    """Count unique candidate-objective vectors seen across the full
+    history sidecar (``<rep>.history.json``). Same dedup as the
+    candidate-cloud figures: round to 6 sig figs, take ``np.unique``.
+
+    Returns None if the sidecar is missing or unreadable so callers
+    can omit this rep from the unique-count aggregation rather than
+    treating "no sidecar" as "no candidates"."""
+    hist_basename = rec.get('history_path')
+    if not hist_basename:
+        return None
+    hist_path = os.path.join(os.path.dirname(rep_path), hist_basename)
+    try:
+        with open(hist_path, 'r', encoding='utf-8') as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    candidate_history = payload.get('candidate_history') or []
+    chunks = []
+    import numpy as np
+    for snap in candidate_history:
+        if not snap:
+            continue
+        try:
+            arr = np.asarray(snap, dtype=float)
+        except (TypeError, ValueError):
+            continue
+        if arr.ndim != 2 or arr.size == 0:
+            continue
+        chunks.append(arr)
+    if not chunks:
+        return 0
+    stacked = np.vstack(chunks)
+    rounded = np.unique(np.round(stacked, 6), axis=0)
+    return int(rounded.shape[0])
+
+
 def _load_records(root: str):
     records = defaultdict(lambda: defaultdict(list))  # records[system][pipeline] -> list
     pattern = os.path.join(root, '*', '*.json')
     for path in sorted(glob.glob(pattern)):
+        # Skip the sidecar history files (``<rep>.history.json``); they
+        # carry the same ``pipeline`` / ``seed`` fields as their parent
+        # rep but contain per-epoch candidate trajectories instead of
+        # metrics. Counting them would double every rep that had history
+        # written.
+        if path.endswith('.history.json'):
+            continue
         try:
             with open(path, 'r', encoding='utf-8') as fh:
                 rec = json.load(fh)
@@ -47,8 +91,21 @@ def _load_records(root: str):
         pipeline = rec.get('pipeline')
         if pipeline not in PIPELINES:
             continue
+        rec['_unique_history'] = _unique_history_count(rec, path)
         records[system][pipeline].append(rec)
     return records
+
+
+def _mean_std(values: list):
+    """Return (mean, std) for ``values`` or (nan, nan) if empty.
+
+    Uses sample stdev (Bessel-corrected) when n >= 2; std is 0.0 for
+    singleton cohorts so the M±S formatting still renders cleanly."""
+    if not values:
+        return float('nan'), float('nan')
+    mean = statistics.fmean(values)
+    std = statistics.stdev(values) if len(values) >= 2 else 0.0
+    return mean, std
 
 
 def _summarize_cell(reps: list) -> dict:
@@ -57,11 +114,25 @@ def _summarize_cell(reps: list) -> dict:
     successes = sum(1 for r in reps if r.get('structural_success'))
     hammings = [r['hamming'] for r in reps if r.get('hamming') is not None]
     runtimes = [r['runtime_sec'] for r in reps if 'runtime_sec' in r]
-    discovered_tokens = [json.dumps(r.get('discovered_tokens', []), sort_keys=True) for r in reps]
+    # ``unique candidates in history`` matches the figure's deduplicated
+    # cloud counts -- one row per distinct objective vector ever
+    # explored, not the final Pareto-0 set size.
+    n_paretos = [r['_unique_history'] for r in reps
+                 if r.get('_unique_history') is not None]
+    # ``epoch identified`` only meaningful for successful reps -- on a
+    # failed rep discovery_epoch still has a value (the epoch the
+    # lowest-Hamming candidate first appeared) but that didn't match
+    # the truth and would dilute the average.
+    epochs_success = [r['discovery_epoch'] for r in reps
+                      if r.get('structural_success')
+                      and r.get('discovery_epoch') is not None]
     rate = successes / len(reps)
     ci = wilson_ci(successes, len(reps))
     mean_h = statistics.fmean(hammings) if hammings else float('nan')
-    mean_t = statistics.fmean(runtimes) if runtimes else float('nan')
+    mean_t, std_t = _mean_std(runtimes)
+    mean_npar, std_npar = _mean_std(n_paretos)
+    mean_ep, std_ep = _mean_std(epochs_success)
+    discovered_tokens = [json.dumps(r.get('discovered_tokens', []), sort_keys=True) for r in reps]
     errors = sum(1 for r in reps if 'error' in r)
     return {
         'n': len(reps),
@@ -72,16 +143,21 @@ def _summarize_cell(reps: list) -> dict:
         'mean_hamming': mean_h,
         'consistency': consistency_rate(discovered_tokens),
         'mean_runtime_sec': mean_t,
+        'std_runtime_sec': std_t,
+        'mean_n_pareto': mean_npar,
+        'std_n_pareto': std_npar,
+        'mean_epoch_identified': mean_ep,
+        'std_epoch_identified': std_ep,
         'errors': errors,
     }
 
 
 def _format_table(summary: dict) -> str:
     header = (
-        '| System | n | Legacy success | Legacy H | Legacy cons | '
-        'NEW success | NEW H | NEW cons | runtime (L / N) |'
+        '| System | n | Legacy success | Legacy H | '
+        'NEW success | NEW H | runtime L (mean±std) | runtime N (mean±std) |'
     )
-    sep = '|---|---|---|---|---|---|---|---|---|'
+    sep = '|---|---|---|---|---|---|---|---|'
     rows = [header, sep]
     for system in sorted(summary.keys()):
         legacy = summary[system].get('legacy', {'n': 0})
@@ -103,14 +179,58 @@ def _format_table(summary: dict) -> str:
                 return '-'
             return fmt.format(v)
 
+        def cell_ms(c, mean_key, std_key, fmt):
+            if c['n'] == 0:
+                return '-'
+            m = c.get(mean_key)
+            s = c.get(std_key)
+            if m is None or (isinstance(m, float) and m != m):
+                return '-'
+            if s is None or (isinstance(s, float) and s != s):
+                return fmt.format(m)
+            return f"{fmt.format(m)}±{fmt.format(s)}"
+
         rows.append(
             f"| {system} | {max(legacy['n'], new['n'])} | "
             f"{cell_success(legacy)} | {cell_num(legacy, 'mean_hamming', '{:.1f}')} | "
-            f"{cell_num(legacy, 'consistency', '{:.2f}')} | "
             f"{cell_success(new)} | {cell_num(new, 'mean_hamming', '{:.1f}')} | "
-            f"{cell_num(new, 'consistency', '{:.2f}')} | "
-            f"{cell_num(legacy, 'mean_runtime_sec', '{:.1f}')}s / "
-            f"{cell_num(new, 'mean_runtime_sec', '{:.1f}')}s |"
+            f"{cell_ms(legacy, 'mean_runtime_sec', 'std_runtime_sec', '{:.1f}')}s | "
+            f"{cell_ms(new, 'mean_runtime_sec', 'std_runtime_sec', '{:.1f}')}s |"
+        )
+    return '\n'.join(rows)
+
+
+def _format_dynamics_table(summary: dict) -> str:
+    """Per-(system, pipeline) discovery dynamics: unique Pareto-0
+    solution count and the epoch at which the truth was identified
+    (success-only). Both as mean±std."""
+    header = (
+        '| System | Legacy unique cands (mean±std) | Legacy epoch identified | '
+        'NEW unique cands (mean±std) | NEW epoch identified |'
+    )
+    sep = '|---|---|---|---|---|'
+    rows = [header, sep]
+
+    def cell_ms(c, mean_key, std_key, fmt, suffix=''):
+        if c['n'] == 0:
+            return '-'
+        m = c.get(mean_key)
+        s = c.get(std_key)
+        if m is None or (isinstance(m, float) and m != m):
+            return '-'
+        if s is None or (isinstance(s, float) and s != s):
+            return f"{fmt.format(m)}{suffix}"
+        return f"{fmt.format(m)}±{fmt.format(s)}{suffix}"
+
+    for system in sorted(summary.keys()):
+        legacy = summary[system].get('legacy', {'n': 0})
+        new = summary[system].get('new', {'n': 0})
+        rows.append(
+            f"| {system} | "
+            f"{cell_ms(legacy, 'mean_n_pareto', 'std_n_pareto', '{:.1f}')} | "
+            f"{cell_ms(legacy, 'mean_epoch_identified', 'std_epoch_identified', '{:.1f}')} | "
+            f"{cell_ms(new, 'mean_n_pareto', 'std_n_pareto', '{:.1f}')} | "
+            f"{cell_ms(new, 'mean_epoch_identified', 'std_epoch_identified', '{:.1f}')} |"
         )
     return '\n'.join(rows)
 
@@ -126,6 +246,14 @@ def aggregate(root: str = None) -> dict:
 
 
 def main(argv=None) -> int:
+    # The summary tables contain ``±`` (U+00B1). On Windows
+    # PowerShell the default stdout encoding is cp1252 which
+    # mangles it; force UTF-8 so the output the user copies
+    # into ``new_vs_legacy.md`` keeps the proper glyph.
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', default=DEFAULT_RESULTS_DIR,
@@ -136,6 +264,8 @@ def main(argv=None) -> int:
 
     summary = aggregate(args.root)
     print(_format_table(summary))
+    print('\n### Discovery dynamics (mean±std)\n')
+    print(_format_dynamics_table(summary))
     out_path = args.out or os.path.join(_THIS_DIR, 'thesis_summary.json')
     with open(out_path, 'w', encoding='utf-8') as fh:
         json.dump(summary, fh, indent=2)

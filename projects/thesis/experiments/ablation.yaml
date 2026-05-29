@@ -1,0 +1,18 @@
+# 2x2x2 ablation of the NEW pipeline's three contributions:
+# (W) WAPE fitness    (I) Instability objective    (R) Novel regularizer.
+# Only the 6 off-diagonal cells -- the 000 (legacy) and 111 (new)
+# corners are produced by the main_comparison experiment and the
+# ablation aggregator reads both sets from the same results tree.
+name: ablation
+systems: [lv, lorenz, ode, vdp]
+pipelines:
+  - wape
+  - instab
+  - reg
+  - wape_instab
+  - wape_reg
+  - instab_reg
+reps: 30
+seed_base: 0
+resume: true
+outdir: ablation

@@ -4,3 +4,16 @@
 name: kdv
 truth_equations:
   - "-6.0 * du/dx1{power: 1.0} * u{power: 1.0} + -1.0 * d^3u/dx1^3{power: 1.0} = du/dx0{power: 1.0}"
+
+# Alternative analytical form: ``u * d^2u/dx^2 = -u^3 + (du/dx)^2`` is a
+# spatial identity for the soliton family this dataset records. EPDE
+# discovers this characteristic relation instead of the full PDE form;
+# it is algebraically correct for the dataset and so credits as a valid
+# discovery.
+truth_alternatives:
+  - - "-1.0 * u{power: 3.0} + 1.0 * du/dx1{power: 2.0} + 0.0 = u{power: 1.0} * d^2u/dx1^2{power: 1.0}"
+  - - "-3.0 * u{power: 2.0} * du/dx1{power: 1.0} + 1.0 * du/dx1{power: 1.0} * d^2u/dx1^2{power: 1.0} + 0.0 = d^3u/dx1^3{power: 1.0} * u{power: 1.0}"
+  # Temporal companion to the spatial identity above: multiply KdV by
+  # u and substitute u*d^3u/dx1^3 = -3 u^2 du/dx1 + du/dx1 d^2u/dx1^2
+  # to get -(1/3) u du/dx0 - (1/3) du/dx1 d^2u/dx1^2 = u^2 du/dx1.
+  - - "-0.3333333333 * u{power: 1.0} * du/dx0{power: 1.0} + -0.3333333333 * du/dx1{power: 1.0} * d^2u/dx1^2{power: 1.0} + 0.0 = u{power: 2.0} * du/dx1{power: 1.0}"

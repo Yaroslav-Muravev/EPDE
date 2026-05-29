@@ -292,8 +292,7 @@ class Factor(TerminalToken):
         numpy in-place assignment (``factor.params[i] = X``) bypasses
         the setter and MUST call this method directly -- otherwise the
         memoized label remains stale and dedup / cache-key checks
-        return wrong answers. See [[feedback_label_format_coupling]]
-        and sleepy-swinging-acorn audit R1+A6.
+        return wrong answers. See [[feedback_label_format_coupling]].
         """
         self._cache_label = None
         self._structural_label = None
@@ -437,6 +436,34 @@ class Factor(TerminalToken):
         # in place, so aliasing the reference is safe.
         new_struct.__dict__.update(self.__dict__)
         return new_struct
+
+    def copy_for_power_update(self):
+        """Cheap clone for ``supplementary.filter_powers``.
+
+        ``filter_powers`` deepcopies a factor only to mutate its
+        ``power`` param via ``set_param``. Everything else can be aliased:
+        only ``_params`` (a small numpy array written in place by
+        ``set_param``) needs its own storage. The label-cache slots are
+        zeroed because ``set_param`` would invalidate them anyway, and
+        the dict-based parent attrs ride along by reference.
+
+        This path was called 237k times per lv_new rep (47s cumtime via
+        ``copy.deepcopy``); the per-call cost drops from ~200μs to a
+        handful of attribute reads + one numpy array copy.
+        """
+        cls = self.__class__
+        new = cls.__new__(cls)
+        for slot in cls.__slots__:
+            try:
+                setattr(new, slot, getattr(self, slot))
+            except AttributeError:
+                pass
+        new._params = self._params.copy()
+        new._cache_label = None
+        new._structural_label = None
+        new._structural_label_without_power = None
+        new.__dict__.update(self.__dict__)
+        return new
 
     def use_cache(self):
         self.cache_linked = True

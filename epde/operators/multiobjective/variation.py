@@ -201,8 +201,15 @@ class EquationCrossover(CompoundOperator):
 
         parent1 = objective[0]
         parent2 = objective[1]
-        p1_target_term = deepcopy(parent1.structure[parent1.target_idx])
-        p2_target_term = deepcopy(parent2.structure[parent2.target_idx])
+        # Snapshot target term identity (not the term itself) -- the
+        # actual deepcopy is deferred to ``_ensure_target`` and only
+        # pays when the target wasn't already partitioned into the
+        # offspring via Phase 1/2/3. Common case (target shared as an
+        # anchor) saves both deepcopies entirely.
+        p1_target_ref = parent1.structure[parent1.target_idx]
+        p2_target_ref = parent2.structure[parent2.target_idx]
+        p1_target_labels = p1_target_ref.factors_labels
+        p2_target_labels = p2_target_ref.factors_labels
 
         def factor_signature(term):
             """Factor-function-set signature, ignoring params.
@@ -285,15 +292,19 @@ class EquationCrossover(CompoundOperator):
 
         # Phase 4 -- force-include each parent's target term so right-part
         # validity survives the partition. Anchored / partitioned targets
-        # are already present; the helper is a no-op in that case.
-        def _ensure_target(terms, target_term):
+        # are already present; the helper is a no-op in that case. When
+        # we DO need to add the target, deepcopy on the spot so the
+        # offspring doesn't alias the parent's term.
+        def _ensure_target(terms, parent_target_term, target_labels):
             for t in terms:
-                if t.factors_labels == target_term.factors_labels:
+                if t.factors_labels == target_labels:
                     return terms
-            return [target_term] + terms
+            return [deepcopy(parent_target_term)] + terms
 
-        offspring1_terms = _ensure_target(offspring1_terms, p1_target_term)
-        offspring2_terms = _ensure_target(offspring2_terms, p2_target_term)
+        offspring1_terms = _ensure_target(
+            offspring1_terms, p1_target_ref, p1_target_labels)
+        offspring2_terms = _ensure_target(
+            offspring2_terms, p2_target_ref, p2_target_labels)
 
         # Phase 5 -- D10 post-assembly dedup gate. A param-blend pair can
         # in principle produce a structural_label that collides with an
@@ -310,18 +321,22 @@ class EquationCrossover(CompoundOperator):
         if had_duplicate:
             return objective[0], objective[1]
 
-        # Phase 6 -- build the offspring Equation objects.
-        equation1 = deepcopy(parent1)
-        equation2 = deepcopy(parent2)
+        # Phase 6 -- build the offspring Equation objects via shell
+        # clones (no parent ``structure`` deepcopy). The offspring term
+        # list is freshly built above; cloning the full parent and then
+        # overwriting ``.structure`` wasted a Term+Factor recursion that
+        # was the heaviest single deepcopy in the crossover hot path.
+        equation1 = parent1.clone_shell()
+        equation2 = parent2.clone_shell()
         equation1.structure = offspring1_terms
         equation2.structure = offspring2_terms
 
         for i, t in enumerate(equation1.structure):
-            if t.factors_labels == p1_target_term.factors_labels:
+            if t.factors_labels == p1_target_labels:
                 equation1.target_idx = i
                 break
         for i, t in enumerate(equation2.structure):
-            if t.factors_labels == p2_target_term.factors_labels:
+            if t.factors_labels == p2_target_labels:
                 equation2.target_idx = i
                 break
 

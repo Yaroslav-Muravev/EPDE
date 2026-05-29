@@ -1,0 +1,58 @@
+# 8 containers, one per ablation cell. All share the same image
+# and bind-mount projects/thesis/results/ so reps land on the host
+# filesystem and the aggregator can read them without entering a
+# container.
+#
+# Recommended invocation:
+#   docker compose build
+#   docker compose up -d              # runs all 8 in background
+#   docker compose logs -f cell-new   # tail one cell's output
+#   docker compose down               # stops everything
+#
+# Resource notes:
+#   - 16 host cores -> 2 threads/container is safe.
+#   - 32 host cores -> bump OMP/MKL/OPENBLAS_NUM_THREADS to 4 for
+#     ~half the wall-clock.
+#   - The runner skips finished <cell>_rep<NN>.json files on
+#     resume, so containers can be killed and relaunched freely.
+
+services:
+  cell-legacy: &cell-base
+    build: .
+    image: epde-thesis:latest
+    command: ["scripts/run_cell.sh", "legacy"]
+    volumes:
+      - ./projects/thesis/results:/work/projects/thesis/results
+    environment:
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+    restart: unless-stopped
+
+  cell-wape:
+    <<: *cell-base
+    command: ["scripts/run_cell.sh", "wape"]
+
+  cell-instab:
+    <<: *cell-base
+    command: ["scripts/run_cell.sh", "instab"]
+
+  cell-reg:
+    <<: *cell-base
+    command: ["scripts/run_cell.sh", "reg"]
+
+  cell-wape-instab:
+    <<: *cell-base
+    command: ["scripts/run_cell.sh", "wape_instab"]
+
+  cell-wape-reg:
+    <<: *cell-base
+    command: ["scripts/run_cell.sh", "wape_reg"]
+
+  cell-instab-reg:
+    <<: *cell-base
+    command: ["scripts/run_cell.sh", "instab_reg"]
+
+  cell-new:
+    <<: *cell-base
+    command: ["scripts/run_cell.sh", "new"]

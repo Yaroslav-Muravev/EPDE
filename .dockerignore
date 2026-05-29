@@ -1,0 +1,13 @@
+.git
+.gitignore
+.claude
+.idea
+projects/thesis/results
+projects/thesis/_test_archive
+__pycache__
+**/__pycache__
+*.pyc
+*.pdf
+*.rar
+Master_Thesis__Bavshin_.pdf
+moeadd.pdf

@@ -1,6 +1,9 @@
 # Rational PDE (synthetic 1+1D PDE)
-#   du/dx0 * x = du/dx1 + 0.25 * d^2u/dx1^2 * x
-# Data: PDE_divide.npy
+#   du/dx0 * x = -2 * du/dx1 + 0.5 * d^2u/dx1^2 * x
+# Data: PDE_divide.npy. Original YAML claimed coefficients (1.0, 0.25) but
+# least-squares fit to the actual data yields (-2.000476, 0.500120) with
+# residual / target RMS ratio < 0.1%, so the data was generated with
+# (-2, 0.5). Rounded to the integer/rational generator values.
 name: pde_divide
 truth_equations:
-  - "1.0 * du/dx1{power: 1.0} + 0.25 * d^2u/dx1^2{power: 1.0} * x_1{power: 1.0, dim: 1.0} = du/dx0{power: 1.0} * x_1{power: 1.0, dim: 1.0}"
+  - "-2.0 * du/dx1{power: 1.0} + 0.5 * d^2u/dx1^2{power: 1.0} * x_1{power: 1.0, dim: 1.0} = du/dx0{power: 1.0} * x_1{power: 1.0, dim: 1.0}"

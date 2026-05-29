@@ -270,9 +270,9 @@ class ParetoLevels(object):
         # equations_labels match is structural -- two distinct SoEq
         # instances CAN share the same labels (same structure, different
         # internal weight history) and both would be silently removed.
-        # See audit D5. The history-based uniqueness guard in
-        # OffspringUpdater is supposed to prevent this, but loud failure
-        # is preferable to silent population shrinkage.
+        # The history-based uniqueness guard in OffspringUpdater is
+        # supposed to prevent this, but loud failure is preferable to
+        # silent population shrinkage.
         if deleted_count != 1:
             raise RuntimeError(
                 f"ParetoLevels.delete_point: expected to remove exactly 1 "
@@ -651,19 +651,40 @@ class MOEADDOptimizer(object):
         if not self.abbreviated_search_executed:
             self.hist = []
             assert not type(self.best_obj) == type(None)
+            # Hoist InitialParetoLevelSorting out of the per-sector
+            # chain so its three setup banners (Initial population /
+            # Marriage / Multiobjective optimization) and the work they
+            # announce interleave in temporal order BEFORE the epoch
+            # loop begins. The operator's ``if len(objective.population)
+            # == 0`` guard (moeadd_specific.py) makes its in-chain
+            # invocation a no-op after this explicit call, so no
+            # strategy-builder surgery is needed.
+            if len(self.pareto_levels.population) == 0:
+                linked = self.sector_processer.linked_blocks
+                init_block = linked.blocks_labeled['initial_sorter']
+                # Mimic LinkedBlocks.traversal's setup so the operator
+                # pulls pareto_levels via the InputBlock and the EA
+                # kwargs via the block's arg_keys filter. weight_idx=0
+                # is arbitrary: InitialParetoLevelSorting only uses its
+                # ``right_part_selector`` / ``chromosome_fitness``
+                # suboperators, not weight-vector-specific kwargs.
+                linked.reset_traversal_cond()
+                linked.initial[0][1].set_output(self.pareto_levels)
+                init_block.apply(self.form_processer_args(0))
             for epoch_idx in np.arange(epochs):
                 if global_var.verbose.show_iter_idx:
-                    print(f'Multiobjective optimization : {epoch_idx}-th epoch.')
+                    print(f'\n----- Multiobjective optimization : {epoch_idx + 1}-th epoch -----')
                 # Shuffle sector order each epoch. The prior fixed
                 # 0..N-1 traversal gave early sectors a population
                 # advantage every epoch (their offspring entered the
                 # global Pareto pool before late sectors saw the
-                # evolved chromosomes). See audit D6. Reproducibility
-                # is preserved because np.random is seeded by the
-                # caller via ``_set_seeds`` before optimization.
-                for weight_idx in np.random.permutation(len(self.weights)):
+                # evolved chromosomes). Reproducibility is preserved
+                # because np.random is seeded by the caller via
+                # ``_set_seeds`` before optimization.
+                n_sectors = len(self.weights)
+                for order_idx, weight_idx in enumerate(np.random.permutation(n_sectors)):
                     if global_var.verbose.show_iter_idx:
-                        print(f'During MO : processing {weight_idx}-th weight.')
+                        print(f'During MO : processing {order_idx + 1}-th sector (of {n_sectors}).')
                     sp_kwargs = self.form_processer_args(weight_idx)
                     self.sector_processer.run(population_subset = self.pareto_levels,
                                               EA_kwargs = sp_kwargs)

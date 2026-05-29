@@ -245,8 +245,14 @@ class Term(ComplexStructure):
                 #     factor_value = factor.evaluate()
                 #     factor_value_normalized = minmax_normalize(factor_value)
                 #     value *= factor_value_normalized
-            if np.all([len(factor.params) == 1 for factor in self.structure]) and grids is None:
-                # Место возможных проблем: сохранение/загрузка нормализованных данных
+            if grids is None:
+                # Cache key is (factors_labels, normalize). factors_labels is a
+                # frozenset of Factor.structural_label, which already
+                # bucket-quantizes continuous params, so the cached product
+                # applies to every term sharing this signature regardless of
+                # how many params each individual factor carries. The legacy
+                # len(factor.params)==1 gate predated the structural-label
+                # quantization and was overly conservative.
                 self.saved[normalize] = global_var.tensor_cache.add(self.factors_labels, value, normalized=normalize)
                 if self.saved[normalize]:
                     self.saved_as[normalize] = self.factors_labels
@@ -852,6 +858,36 @@ class Equation(ComplexStructure):
         new_struct._eval_cache = {}
         return new_struct
 
+    def clone_shell(self):
+        """Return a deepcopied equation **without** copying ``structure``.
+
+        Useful when the caller is about to immediately replace
+        ``new_equation.structure`` with a freshly built term list (e.g.
+        ``EquationCrossover.apply``'s Phase 6) -- deepcopying the parent's
+        full ``[Term, Term, ...]`` only to overwrite it is wasted work
+        (Term + Factor recursion accounts for the bulk of an Equation
+        deepcopy).
+
+        The returned shell aliases ``pool`` by reference (single
+        population-wide instance), gets a fresh empty ``_eval_cache``
+        (the cached evaluations don't survive a structural rewrite),
+        and has ``structure = []`` so the caller can ``.append`` /
+        assign without aliasing the parent's term list.
+        """
+        clone = _deepcopy_slots(
+            self, memo={},
+            attrs_to_avoid_copy=(
+                'structure',
+                '_cached_sw_weights',
+                '_terms_labels_cache', '_terms_labels_without_power_cache',
+                '_gram_super',
+            ),
+            attrs_to_share_by_ref=('pool',),
+        )
+        clone.structure = []
+        clone._eval_cache = {}
+        return clone
+
     def copy_properties_to(self, new_equation):
         new_equation.weights_internal_evald = self.weights_internal_evald
         new_equation.weights_final_evald = self.weights_final_evald
@@ -913,7 +949,12 @@ class Equation(ComplexStructure):
             stats_name='add_random_term',
         )
         if success:
-            self.structure.append(deepcopy(new_term))
+            # ``new_term`` is locally scoped and its factors were minted
+            # fresh by ``pool.create()`` (no Factor-instance caching), so
+            # appending the instance directly is safe -- nothing else
+            # aliases its structure. Saves a per-call Term deepcopy that
+            # was ~1.6ms × 29k calls per lv_new rep.
+            self.structure.append(new_term)
             self._invalidate_label_cache()
             return True
         return False

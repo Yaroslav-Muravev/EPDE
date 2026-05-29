@@ -383,17 +383,13 @@ class OffspringUpdater(CompoundOperator):
             # self.suboperators['sparsity'].apply(objective=offspring,
             #                                     arguments=subop_args['sparsity'])
             offspring.reset_state(True)
-            temp_offspring = deepcopy(offspring)
-            # self.suboperators['right_part_selector'].apply(objective=temp_offspring,
-            #                                                arguments=subop_args['right_part_selector'])
-            #
-            # if len(offspring.vars_to_describe) > 1:
-            #     term_replaced = is_rps_in_other_equation(temp_offspring)
-            #     while any(term_replaced):
-            #         offspring.reset_state(True)
-            #         self.suboperators['right_part_selector'].apply(objective=temp_offspring,
-            #                                                        arguments=subop_args['right_part_selector'])
-            #         term_replaced = is_rps_in_other_equation(temp_offspring)
+            # First iteration aliases ``offspring``; ``chromosome_mutation``
+            # (SystemMutation) deepcopies its input before mutating, so the
+            # parent ``offspring`` is never touched. The initial
+            # ``deepcopy(offspring)`` here was discarded immediately by the
+            # very next line below (SystemMutation reassigns
+            # ``temp_offspring``) -- a per-pass SoEq deepcopy of pure waste.
+            temp_offspring = offspring
             total_attempts = 0
             hit_offspring_cap = False
             while True:
@@ -479,6 +475,8 @@ class InitialParetoLevelSorting(CompoundOperator):
 
         if len(objective.population) == 0:
             uniqueness_attempt_limit = self.params['uniqueness_attempt_limit']
+            if global_var.verbose.show_iter_idx:
+                print('\n========== Initial population ==========')
             for idx, candidate in enumerate(objective.unplaced_candidates):
                 candidate.reset_state(True)
                 # SoEqRightPartSelector handles cross-equation RPS
@@ -522,8 +520,12 @@ class InitialParetoLevelSorting(CompoundOperator):
                 objective.history.add(system)
                 if global_var.verbose.candidate_objectives:
                     print(candidate.obj_fun)
+            if global_var.verbose.show_iter_idx:
+                print('\n========== Marriage (weight assignment) ==========')
             objective.associate_weights()
             objective.initial_placing()
+            if global_var.verbose.show_iter_idx:
+                print('\n========== Multiobjective optimization ==========')
 
             # TODO: consider carefully, where normalizer init shall be held. If here, only the initial values are employed
         # objective.set_normalizer()

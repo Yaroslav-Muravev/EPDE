@@ -70,17 +70,30 @@ class L2Fitness(CompoundOperator):
         """
         self_args, subop_args = self.parse_suboperator_args(arguments = arguments)
 
-        if force_out_of_place:
+        # Run sparsity when the caller explicitly asks for an
+        # out-of-place fitness OR when the equation lacks a valid
+        # ``weights_internal`` state. The latter can happen when an
+        # upstream ``EqRightPartSelector`` exhausted its
+        # ``inf_fitness_regen`` outer loop without committing a target
+        # (every candidate target had all-zero LASSO survivors) -- the
+        # equation reaches us with ``weights_internal_evald=False``,
+        # and without this fallback ``coeff_calc`` would assert.
+        need_sparsity = (force_out_of_place
+                         or not getattr(objective, 'weights_internal_evald', False))
+        if need_sparsity:
             self.suboperators['sparsity'].apply(objective, subop_args['sparsity'])
-            # Reject degenerate candidates whose entire non-target library was
-            # zeroed by sparsity. Without this, ``EqRightPartSelector`` may
-            # commit a target_idx whose only surviving content is the
-            # intercept, yielding population members of the form
-            # ``~0 = u^2 * du/dx0`` (no real LHS) that cannot represent any
-            # PDE by construction. Mirrors the rejection in ``L2LRFitness``
-            # so the LEGACY (L2Fitness) and NEW (L2LRFitness) RPS sweeps
-            # share the same admissibility criterion.
-            if all(objective.weights_internal == 0):
+            # Reject degenerate candidates ONLY when this is RPS's
+            # term-sweep (``force_out_of_place=True``) -- there the
+            # caller compares per-target fitness values and a ``None``
+            # signals "skip this target". For the final per-equation
+            # fitness eval downstream (``force_out_of_place=False``)
+            # we must always return a finite value so
+            # ``equation.fitness_calculated`` stays True; otherwise the
+            # MOEA/D objective-aggregation asserts. All-zero-weight
+            # candidates fall through to the residual computation
+            # below, yielding ``rl_error = ||target||`` (just the bare
+            # target norm) which is a finite but poor fitness.
+            if force_out_of_place and all(objective.weights_internal == 0):
                 return None
         self.suboperators['coeff_calc'].apply(objective, subop_args['coeff_calc'])
 
@@ -118,6 +131,35 @@ class L2Fitness(CompoundOperator):
         else:
             objective.fitness_calculated = True
             objective.fitness_value = fitness_value
+
+        # When ``use_pic=True`` is paired with ``fitness_cls=L2Fitness``,
+        # ``equation_terms_stability`` is registered as an MOEA/D objective
+        # but the L2 fitness path never sets ``stability_calculated``.
+        # Mirror ``L2LRFitness``'s CV side-effect so the objective's
+        # assertion holds without touching the L2 fitness value above.
+        try:
+            data_shape = global_var.grid_cache.inner_shape
+            _, sw_target, sw_features = objective.evaluate(normalize=True, return_val=False)
+            if sw_features is None:
+                total_lr = 1.0
+            else:
+                if hasattr(objective, '_cached_sw_weights') and objective._cached_sw_weights is not None:
+                    sw_weights = objective._cached_sw_weights
+                else:
+                    sw_weights = calculate_weights(
+                        sw_features, sw_target, self.g_fun_vals, data_shape,
+                        objective.weights_final[-1] != 0,
+                    )
+                sw_arr = np.array(sw_weights)
+                std = sw_arr.std(axis=0, ddof=1)
+                mu = sw_arr.mean(axis=0)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    cv = (std ** 2) / (mu ** 2)
+                total_lr = sum(cv) / len(data_shape)
+        except Exception:
+            total_lr = 1.0
+        objective.stability_calculated = True
+        objective.coefficients_stability = total_lr
 
     def use_default_tags(self):
         self._tags = {'fitness evaluation', 'gene level', 'contains suboperators', 'inplace'}

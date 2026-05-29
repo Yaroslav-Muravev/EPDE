@@ -150,6 +150,13 @@ class SystemCfg:
         default_factory=lambda: (lambda coords, dim: [])
     )
     hparams: dict = field(default_factory=dict)
+    # Optional alternative canonical truth systems (e.g. similarity-solution
+    # identities that EPDE may legitimately discover alongside the PDE).
+    # ``truth_tokens`` is always the first alternative; additional forms
+    # populate ``truth_alternatives`` from the per-system YAML's
+    # ``truth_alternatives`` list. ``hamming_best`` /
+    # ``structural_success_any`` from thesis_metrics walk all of them.
+    truth_alternatives: tuple = field(default_factory=tuple)
 
 
 def _load_yaml(path: str) -> dict:
@@ -213,6 +220,14 @@ def load_config(name_or_path: str) -> SystemCfg:
     from thesis_metrics import canonical_tokens
     truth_equations = system_dict.get('truth_equations') or []
     truth_tokens = canonical_tokens(truth_equations)
+    # Optional alternative canonical truth forms. Each entry is a list
+    # of equation strings (same shape as ``truth_equations``); each
+    # canonicalises to a tuple of frozensets that the metric helpers
+    # compare against in addition to the primary truth.
+    alt_lists = system_dict.get('truth_alternatives') or []
+    truth_alternatives = tuple(
+        canonical_tokens(eq_list) for eq_list in alt_lists if eq_list
+    )
 
     adapter_name = system_dict.get('adapter', name)
     if _THIS_DIR not in sys.path:
@@ -238,6 +253,7 @@ def load_config(name_or_path: str) -> SystemCfg:
     kwargs: dict = dict(
         name=name,
         truth_tokens=truth_tokens,
+        truth_alternatives=truth_alternatives,
         outdir=outdir,
         load_data=adapter_mod.load_data,
         hparams=hparams,
@@ -261,12 +277,24 @@ def _boundary_for(coords) -> Any:
     return tuple(max(1, n // 10) for n in sample.shape)
 
 
+def _truth_alts(cfg: 'SystemCfg') -> tuple:
+    """Return the full tuple of canonical truth alternatives for ``cfg``.
+
+    The primary ``truth_tokens`` is always the first element; any
+    ``truth_alternatives`` declared in the YAML follow. Used everywhere
+    the metric is computed so EPDE is credited for discovering any
+    declared valid form (e.g. burgers_inviscid's similarity-solution
+    identity in addition to the PDE form).
+    """
+    return (cfg.truth_tokens,) + tuple(cfg.truth_alternatives)
+
+
 def _build_truth_match_callback(cfg: 'SystemCfg') -> Callable:
     """Return a per-epoch callback that stops MOEA/D once any Pareto-0
-    candidate canonically matches ``cfg.truth_tokens``.
+    candidate canonically matches one of ``cfg``'s truth alternatives.
     """
-    from thesis_metrics import canonical_tokens, structural_success
-    truth = cfg.truth_tokens
+    from thesis_metrics import canonical_tokens, structural_success_any
+    truth_alts = _truth_alts(cfg)
 
     def _cb(snapshot, epoch_idx):
         for entry in snapshot:
@@ -276,7 +304,7 @@ def _build_truth_match_callback(cfg: 'SystemCfg') -> Callable:
                 canon = canonical_tokens(lines)
             except Exception:
                 continue
-            if structural_success(canon, truth):
+            if structural_success_any(canon, truth_alts):
                 return True
         return False
 
@@ -293,7 +321,14 @@ def _build_token_pool(cfg: 'SystemCfg', coords, dim: int) -> list:
     every PDE dim>=1 without per-system overrides.
     """
     gt = cfg.hparams['grid_tokens']
-    grid_labels = [f'x_{i}' for i in range(dim + 1)]
+    # Single grid-token family: one label ``x``, with ``dim`` as the
+    # inner parameter discriminating axes. Previously this registered
+    # one token per axis (``x_0``, ``x_1``, ...) AND also a ``dim``
+    # parameter -- redundant, and the metric's ``_GRID_COORD_NAME_RE``
+    # collapse was a workaround. ``unique_token_type=True`` on the
+    # family already caps grid factors at one per term, so collapsing
+    # the labels doesn't change observable behaviour.
+    grid_labels = ['x']
     pool: list = [GridTokens(grid_labels, dimensionality=dim, max_power=gt['max_power'])]
 
     for spec in cfg.hparams.get('additional_tokens') or []:
@@ -335,11 +370,21 @@ def _configure_preprocessor(search: EpdeSearch, cfg: 'SystemCfg') -> None:
                             preprocessor_kwargs=pp.get('kwargs') or {})
 
 
-def _configure_moeadd(search: EpdeSearch, cfg: 'SystemCfg') -> None:
+def _configure_moeadd(search: EpdeSearch, cfg: 'SystemCfg',
+                       variable_names: list) -> None:
     mo = cfg.hparams['moeadd']
     early_stop_cb = _build_truth_match_callback(cfg) if mo.get('early_stop_on_truth') else None
+    population_size = int(mo['population_size'])
+    # Coupled systems (multi-equation: lv, lorenz, ns) live in a joint
+    # (discrepancy, complexity)^k objective space where k is the number
+    # of equations. The default population_size=16 weight vectors
+    # produces a thin Pareto front (LV reps often return 1-11 solutions,
+    # Lorenz ~14-16). Double the weight population to 32 for coupled
+    # systems so the front actually covers the per-equation trade-offs.
+    if len(variable_names) > 1:
+        population_size = max(population_size, 32)
     search.set_moeadd_params(
-        population_size=mo['population_size'],
+        population_size=population_size,
         training_epochs=mo['training_epochs'],
         early_stopping_callback=early_stop_cb,
     )
@@ -388,7 +433,7 @@ def build_search(cfg: 'SystemCfg', pipeline_kwargs: dict) -> EpdeSearch:
     additional_tokens = _build_token_pool(cfg, coords, dim)
     search = _construct_search(cfg, coords, pipeline_kwargs)
     _configure_preprocessor(search, cfg)
-    _configure_moeadd(search, cfg)
+    _configure_moeadd(search, cfg, variable_names)
     _run_fit(search, cfg, data, variable_names, dim, additional_tokens)
     return search
 
@@ -401,7 +446,17 @@ def _set_seeds(seed: int) -> None:
 
 
 def _tokens_to_json(tokens) -> list:
-    """Recursively convert a canonical token structure into JSON-friendly lists."""
+    """Recursively convert a canonical token structure into JSON-friendly lists.
+
+    The canonical structure (per :func:`thesis_metrics.canonical_tokens`)
+    is a tuple of frozensets, where each frozenset is the **flat term
+    set** of one equation (target-side-independent: target and rhs
+    merged). Each term is a frozenset of factors; each factor is a
+    ``(name, frozenset_of_param_items)`` tuple.
+
+    Output shape: ``[ [ [ [name, [[k,v], ...]], ... ], ... ], ... ]``
+    (equations → terms → factors → factor as ``[name, sorted_params]``).
+    """
     def factor(f):
         name, params = f
         return [name, sorted(([k, v] for k, v in params), key=lambda p: p[0])]
@@ -409,13 +464,10 @@ def _tokens_to_json(tokens) -> list:
     def term(t):
         return sorted([factor(f) for f in t], key=lambda f: (f[0], repr(f[1])))
 
-    out = []
-    for target, rhs in tokens:
-        out.append([
-            term(target),
-            sorted((term(t) for t in rhs), key=lambda x: repr(x)),
-        ])
-    return sorted(out, key=lambda x: repr(x))
+    def equation(eq):
+        return sorted([term(t) for t in eq], key=lambda t: repr(t))
+
+    return sorted([equation(eq) for eq in tokens], key=lambda x: repr(x))
 
 
 def _discovery_epochs(final_token_sets, pareto_history) -> list:
@@ -479,6 +531,30 @@ def _extract_objectives(search: EpdeSearch) -> list:
     return out
 
 
+def _extract_candidate_history(search: EpdeSearch) -> list:
+    """Return per-epoch all-candidate objective vectors.
+
+    Source: ``MOEADDOptimizer._hist`` (populated at
+    ``epde/optimizers/moeadd/moeadd.py:671`` via
+    ``pareto_levels.get_stats()``). Each entry is an ndarray of shape
+    ``(n_candidates_at_epoch, n_objectives)`` -- here returned as
+    JSON-safe nested lists. Captures ALL candidates across ALL Pareto
+    levels, not just front 0, so density plots can show full search
+    coverage. Returns ``[]`` if the optimizer didn't track history.
+    """
+    try:
+        raw_hist = getattr(search.optimizer, '_hist', []) or []
+    except Exception:
+        return []
+    out = []
+    for snap in raw_hist:
+        try:
+            out.append(np.asarray(snap, dtype=float).tolist())
+        except Exception:
+            out.append([])
+    return out
+
+
 def run_one(system_cfg: SystemCfg, pipeline: str, seed: int) -> dict:
     """Run a single (system, pipeline, seed) repetition.
 
@@ -486,9 +562,12 @@ def run_one(system_cfg: SystemCfg, pipeline: str, seed: int) -> dict:
     and recorded as ``error`` and ``traceback`` fields so a failing rep
     does not kill the batch.
     """
-    from thesis_metrics import canonical_tokens, hamming, structural_success
+    from thesis_metrics import (
+        canonical_tokens, hamming_best, structural_success_any,
+    )
 
     pipeline_kwargs = pipeline_settings(pipeline)
+    truth_alts = _truth_alts(system_cfg)
     _set_seeds(seed)
 
     record: dict = {
@@ -510,8 +589,9 @@ def run_one(system_cfg: SystemCfg, pipeline: str, seed: int) -> dict:
         objectives_per_solution = _extract_objectives(search)
         per_solution_tokens = [canonical_tokens(sol) for sol in solutions_text]
         pareto_history = list(getattr(search, 'pareto_history', []))
+        candidate_history = _extract_candidate_history(search)
         if per_solution_tokens:
-            hammings = [hamming(c, system_cfg.truth_tokens) for c in per_solution_tokens]
+            hammings = [hamming_best(c, truth_alts) for c in per_solution_tokens]
             best_idx = int(min(range(len(hammings)), key=lambda i: hammings[i]))
             discovery_epochs = _discovery_epochs(per_solution_tokens, pareto_history)
             best_objectives = (
@@ -534,8 +614,14 @@ def run_one(system_cfg: SystemCfg, pipeline: str, seed: int) -> dict:
                 'objectives_per_solution': objectives_per_solution,
                 'objectives': best_objectives,
                 'structural_success': any(
-                    structural_success(c, system_cfg.truth_tokens) for c in per_solution_tokens
+                    structural_success_any(c, truth_alts) for c in per_solution_tokens
                 ),
+                # Sidecar payload: stripped by run_smoke before the rep
+                # JSON is written; persisted to <rep>.history.json
+                # alongside the rep file. Underscore prefix marks this as
+                # consumer-private (run_smoke pops it; the small metrics
+                # JSON never carries the bulky array).
+                '_candidate_history': candidate_history,
             })
         else:
             record.update({
@@ -551,6 +637,7 @@ def run_one(system_cfg: SystemCfg, pipeline: str, seed: int) -> dict:
                 'objectives_per_solution': [],
                 'objectives': None,
                 'structural_success': False,
+                '_candidate_history': candidate_history,
             })
     except Exception as exc:  # pragma: no cover - smoke-time diagnostic
         record.update({
@@ -565,6 +652,7 @@ def run_one(system_cfg: SystemCfg, pipeline: str, seed: int) -> dict:
             'objectives_per_solution': [],
             'objectives': None,
             'structural_success': False,
+            '_candidate_history': [],
         })
     return record
 
@@ -620,6 +708,24 @@ def run_smoke(
                     print(f"[resume] {out_path} unreadable ({exc!r}); re-running rep")
             print(f"\n========== {system_cfg.name} / {pipeline} / rep {rep} (seed={seed}) ==========")
             record = run_one(system_cfg, pipeline, seed)
+            # Strip the bulky per-epoch candidate history into a sidecar
+            # file so the rep JSON stays light. See _extract_candidate_history.
+            candidate_history = record.pop('_candidate_history', [])
+            if candidate_history:
+                history_basename = f"{pipeline}_rep{rep:02d}.history.json"
+                history_path = os.path.join(out_root, history_basename)
+                first_snap = next((s for s in candidate_history if s), None)
+                n_obj = len(first_snap[0]) if first_snap else 0
+                with open(history_path, 'w', encoding='utf-8') as fh:
+                    json.dump({
+                        'system': system_cfg.name,
+                        'pipeline': pipeline,
+                        'seed': seed,
+                        'n_epochs': len(candidate_history),
+                        'n_objectives': n_obj,
+                        'candidate_history': candidate_history,
+                    }, fh)
+                record['history_path'] = history_basename
             with open(out_path, 'w', encoding='utf-8') as fh:
                 json.dump(record, fh, indent=2, default=str)
             status = 'OK' if 'error' not in record else 'FAIL'

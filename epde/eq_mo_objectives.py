@@ -61,13 +61,20 @@ def equation_complexity_by_terms(system, equation_key):
 
 
 def _complexity_single_eq(system, equation_key):
+    # Index by ``weights_internal`` (always length ``len(structure)-1``,
+    # one entry per non-target term in structure order) rather than
+    # ``weights_final`` (zero-filtered to ``nnz+1`` by ``LASSOSparsity``
+    # and ``VWSRSparsity``): structure-position indexing breaks against
+    # ``weights_final`` whenever the sparsity step zeros more than one
+    # weight.
+    equation = system.vals[equation_key]
     eq_compl = 0
-    for idx, term in enumerate(system.vals[equation_key].structure):
-        if idx < system.vals[equation_key].target_idx:
-            if not system.vals[equation_key].weights_final[idx] == 0:
+    for idx, term in enumerate(equation.structure):
+        if idx < equation.target_idx:
+            if not equation.weights_internal[idx] == 0:
                 eq_compl += complexity_deriv(term.structure)
-        elif idx > system.vals[equation_key].target_idx:
-            if not system.vals[equation_key].weights_final[idx-1] == 0:
+        elif idx > equation.target_idx:
+            if not equation.weights_internal[idx-1] == 0:
                 eq_compl += complexity_deriv(term.structure)
         else:
             eq_compl += complexity_deriv(term.structure)

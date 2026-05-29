@@ -1,0 +1,24 @@
+# Main thesis Section 4.5 comparison: LEGACY vs NEW across 14 systems
+# (incl. NS cylinder-wake at Re=100; see configs/ns.yaml + adapters/ns.py).
+name: main_comparison
+systems:
+  - lv
+  - lorenz
+  - vdp
+  - ode
+  - ac
+  - burgers_inviscid
+  - burgers_viscous
+  - kdv
+  - kdv_cossin
+  - ks
+  - pde_compound
+  - pde_divide
+  - wave
+  - ns
+pipelines: [legacy, new]
+reps: 30
+seed_base: 0
+resume: true
+# Lands at projects/thesis/results/main_comparison/<system>/<pipeline>_rep<NN>.json
+outdir: main_comparison
