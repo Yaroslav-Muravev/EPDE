@@ -14,15 +14,10 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 
 from epde.integrate import SolverAdapter
-# DeepXDEAdapter is imported lazily inside DeepXDEBasedFitness.apply() to
-# avoid triggering deepxde's import-time backend banner when no DeepXDE
-# solver is used (e.g. legacy L2/L2LR fitness paths).
+
 from epde.structure.main_structures import SoEq, Equation
 from epde.operators.utils.template import CompoundOperator
 import epde.globals as global_var
-from sklearn.linear_model import LinearRegression, Ridge
-from scipy.optimize import minimize
-from epde.supplementary import minmax_normalize
 from epde.supplementary import calculate_weights
 
 LOSS_NAN_VAL = 1e7
@@ -474,13 +469,18 @@ class DeepXDEBasedFitness(CompoundOperator):
 
     def __init__(self, param_keys: list):
         super().__init__(param_keys)
-        self.adapter = None
+        self._solver = None
 
-    def set_adapter(self, config: dict = None, pretrained_net=None):
-        if self.adapter is None:
-            from epde.integrate.deepxde_integration import DeepXDEAdapter
-            cfg = self.params.get('deepxde_config', {}) if config is None else config
-            self.adapter = DeepXDEAdapter(pretrained_net=pretrained_net, **cfg)
+    def _get_solver(self):
+        if self._solver is None:
+            from epde.solver.factory import SolverFactory
+            solver_type = self.params.get('solver_type', 'deepxde')
+            solver_config = self.params.get('solver_config', {})
+            # Обратная совместимость со старым параметром deepxde_config
+            if 'deepxde_config' in self.params and solver_type == 'deepxde':
+                solver_config = self.params['deepxde_config']
+            self._solver = SolverFactory.create(solver_type, **solver_config)
+        return self._solver
 
     def apply(self, objective, arguments: dict, force_out_of_place: bool = False):
         self_args, subop_args = self.parse_suboperator_args(arguments=arguments)
@@ -489,13 +489,7 @@ class DeepXDEBasedFitness(CompoundOperator):
             self.suboperators['sparsity'].apply(objective, subop_args.get('sparsity', {}))
         self.suboperators['coeff_calc'].apply(objective, subop_args.get('coeff_calc', {}))
 
-        try:
-            pretrained_net = deepcopy(global_var.solution_guess_nn)
-        except:
-            pretrained_net = None
-        self.set_adapter(pretrained_net=pretrained_net)
-
-        keys, grids = global_var.grid_cache.get_all(mode='numpy')
+        keys, grids = global_var.grid_cache.get_all(mode='numpy', structural=True)
 
         if isinstance(objective, SoEq):
             data_list = []
@@ -507,15 +501,26 @@ class DeepXDEBasedFitness(CompoundOperator):
             _, target, _ = objective.evaluate(normalize=False, return_val=False)
             data_list = [target.reshape(-1)]
 
+        solver = self._get_solver()
+
+        print(f"[DEBUG] objective type: {type(objective)}")
+        if isinstance(objective, SoEq):
+            print(f"[DEBUG] vars_to_describe: {objective.vars_to_describe}")
+            print(f"[DEBUG] data_list length: {len(data_list)}")
+            for i, d in enumerate(data_list):
+                print(f"[DEBUG] data_list[{i}].shape: {d.shape}")
+
         try:
-            solution_list, loss = self.adapter.solve(equation_or_system=objective,
-                                                     grids=grids,
-                                                     data=data_list)
+            solution_list, loss = solver.solve(equation_or_system=objective,
+                                               grids=grids,
+                                               data=data_list)
             if np.isnan(loss):
                 raise ValueError("NaN loss")
 
             if isinstance(objective, SoEq):
-                for idx, (var_name, eq) in enumerate({val: objective.vals[val] for val in objective.vars_to_describe}.items()):
+                # Перебираем уравнения в порядке vars_to_describe
+                for idx, var_name in enumerate(objective.vars_to_describe):
+                    eq = objective.vals[var_name]
                     err = self._compute_error(solution_list[idx], data_list[idx], eq)
                     if force_out_of_place:
                         pass
@@ -534,7 +539,9 @@ class DeepXDEBasedFitness(CompoundOperator):
                     objective.fitness_calculated = True
                     self._compute_stability_for_equation(objective)
         except Exception as e:
-            print(f'[DeepXDEBasedFitness] DeepXDE solve failed: {e}')
+            print(f'[DeepXDEBasedFitness] Solver failed: {e}')
+            import traceback
+            traceback.print_exc()
             fitness_value = 1e7
             if force_out_of_place:
                 return fitness_value
@@ -566,7 +573,6 @@ class DeepXDEBasedFitness(CompoundOperator):
         return err
 
     def _compute_stability_for_equation(self, eq: Equation):
-        # Повторно вычисляется evaluate
         _, target, features = eq.evaluate(normalize=False, return_val=False)
         data_shape = global_var.grid_cache.inner_shape
         self.get_g_fun_vals()
