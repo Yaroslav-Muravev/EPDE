@@ -35,8 +35,7 @@ jobs:
           pytest tests/functional/ -m functional \
             --discovery --use-solver --report \
             --operators ${{ matrix.operator }} \
-            --ignore=tests/functional/tests/test_ns.py \
-            --timeout=3600
+            --ignore=tests/functional/tests/test_ns.py
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
