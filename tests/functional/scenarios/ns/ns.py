@@ -124,14 +124,14 @@ class NavierStokesTest(EquationTestTemplate):
         return epde_search_obj
 
     @pytest.mark.slow
-    def run_discovery(self, search_obj, report_dir=None, operator_name="unknown"):
+    def run_discovery(self, search_obj, report_dir=None, operator_name="unknown", use_solver=False):
         """Режим поиска уравнений (discovery)."""
         grids, data = self.ns_data()
         noised_data = self.noise_data(data, self.noise_level)
         t, y, x = grids
 
         epde_search_obj = EpdeSearch(
-            use_solver=False,
+            use_solver=use_solver,
             multiobjective_mode=True,
             use_pic=True,
             boundary=[21,21,46],

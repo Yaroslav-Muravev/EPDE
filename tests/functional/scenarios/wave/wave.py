@@ -107,7 +107,7 @@ class WaveTest(EquationTestTemplate):
         return epde_search_obj
 
     @pytest.mark.slow
-    def run_discovery(self, search_obj, report_dir=None, operator_name="unknown"):
+    def run_discovery(self, search_obj, report_dir=None, operator_name="unknown", use_solver=False):
         """Режим поиска уравнений."""
         grids, data = self.wave_data()
         noised_data = self.noise_data(data, self.noise_level)
@@ -115,7 +115,7 @@ class WaveTest(EquationTestTemplate):
         x = grids[1]
 
         epde_search_obj = EpdeSearch(
-            use_solver=False,
+            use_solver=use_solver,
             multiobjective_mode=True,
             use_pic=True,
             boundary=20,

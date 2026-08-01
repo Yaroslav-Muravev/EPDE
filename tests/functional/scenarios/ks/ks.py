@@ -86,11 +86,11 @@ class KSTest(EquationTestTemplate):
             encoding="utf-8",
         )
 
-    def make_search(self):
+    def make_search(self, use_solver=False):
         grid, data = self.load_ks_data(os.path.join(self.foldername, "kuramoto_sivishinky.mat"))
 
         epde_search_obj = EpdeSearch(
-            use_solver=False,
+            use_solver=use_solver,
             use_pic=True,
             boundary=(50, 400),
             coordinate_tensors=grid,

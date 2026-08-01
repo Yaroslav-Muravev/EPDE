@@ -32,6 +32,7 @@ def test_ns(operator_name, params, runtime_options):
             search_obj,
             report_dir=runtime_options["report_dir"] if runtime_options["report"] else None,
             operator_name=operator_name,
+            use_solver=runtime_options["use_solver"],
         )
         assert elapsed < 600
     else:

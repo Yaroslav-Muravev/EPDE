@@ -27,6 +27,13 @@ def pytest_addoption(parser):
         help="Comma-separated list of operators to test",
     )
 
+    parser.addoption(
+        "--use-solver",
+        action="store_true",
+        default=False,
+        help="Enable solver-based fitness (DeepXDE) during discovery",
+    )
+
 @pytest.fixture
 def runtime_options(request):
     operators = request.config.getoption("--operators")
@@ -36,6 +43,7 @@ def runtime_options(request):
         "report": request.config.getoption("--report"),
         "report_dir": Path(request.config.getoption("--report-dir")),
         "operators": operator_list,
+        "use_solver": request.config.getoption("--use-solver"),
     }
 
 def pytest_configure(config):

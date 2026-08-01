@@ -50,12 +50,12 @@ class ACTest(EquationTestTemplate):
     def make_additional_tokens(self):
         return []
 
-    def make_search(self):
+    def make_search(self, use_solver=False):
         grid, data = self.ac_data()
         data_nn = self.load_pretrained_PINN()
 
         epde_search_obj = EpdeSearch(
-            use_solver=False,
+            use_solver=use_solver,
             use_pic=True,
             boundary=(5, 12),
             coordinate_tensors=(grid[0], grid[1]),

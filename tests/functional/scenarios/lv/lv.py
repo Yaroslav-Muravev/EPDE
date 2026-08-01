@@ -116,7 +116,7 @@ class LotkaVolterraTest(EquationTestTemplate):
         return epde_search_obj
 
     @pytest.mark.slow
-    def run_discovery(self, search_obj, report_dir=None, operator_name="unknown"):
+    def run_discovery(self, search_obj, report_dir=None, operator_name="unknown", use_solver=False):
         t, data = self.lv_data()
         noised_data = self.noise_data(data, self.noise_level)
         end = 150
@@ -125,7 +125,7 @@ class LotkaVolterraTest(EquationTestTemplate):
         v = noised_data[:end, 1]
 
         epde_search_obj = EpdeSearch(
-            use_solver=False,
+            use_solver=use_solver,
             multiobjective_mode=True,
             use_pic=True,
             boundary=15,

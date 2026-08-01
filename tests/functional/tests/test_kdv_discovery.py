@@ -30,7 +30,7 @@ def test_kdv(operator_name, params, runtime_options):
     scenario = KdVTest(noise_level=0)
 
     if runtime_options["discovery"]:
-        search_obj = scenario.make_search()
+        search_obj = scenario.make_search(use_solver=runtime_options["use_solver"])
         search_obj, elapsed = scenario.run_discovery(
             search_obj,
             report_dir=runtime_options["report_dir"] if runtime_options["report"] else None,

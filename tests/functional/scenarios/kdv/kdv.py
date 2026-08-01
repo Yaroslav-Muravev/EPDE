@@ -118,11 +118,11 @@ class KdVTest(EquationTestTemplate):
             encoding="utf-8",
         )
 
-    def make_search(self):
+    def make_search(self, use_solver=False):
         grid, data = self.load_data()
 
         epde_search_obj = EpdeSearch(
-            use_solver=False,
+            use_solver=use_solver,
             use_pic=True,
             boundary=10,
             coordinate_tensors=(grid[0], grid[1]),

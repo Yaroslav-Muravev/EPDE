@@ -121,14 +121,15 @@ class BurgersTest(EquationTestTemplate):
             params_ranges={"power": (1, 1)},
             params_equality_ranges=None,
         )
-        trig_tokens = TrigonometricTokens(dimensionality=dimensionality, freq=(0.999, 1.001))
+        trig_tokens = TrigonometricTokens(dimensionality=self.dimensionality, freq=(0.999, 1.001))
         return [custom_grid_tokens]
 
-    def make_search(self):
+    def make_search(self, use_solver=False):
         grid, data = self.load_burgers_sindy_data(os.path.join(self.foldername, "burgers.mat"))
+        self.dimensionality = data.ndim - 1
 
         epde_search_obj = EpdeSearch(
-            use_solver=False,
+            use_solver=use_solver,
             use_pic=True,
             boundary=10,
             coordinate_tensors=(grid[0], grid[1]),

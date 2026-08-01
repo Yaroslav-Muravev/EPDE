@@ -47,13 +47,13 @@ class VanDerPolTest(EquationTestTemplate):
     def noise_data(data, noise_level):
         return noise_level * 0.01 * np.std(data) * np.random.normal(size=data.shape) + data
 
-    def make_search(self):
+    def make_search(self, use_solver=False):
         step = 0.05
         steps_num = 320
         t = np.arange(0., step * steps_num, step)
 
         epde_search_obj = EpdeSearch(
-            use_solver=False,
+            use_solver=use_solver,
             use_pic=True,
             boundary=2,
             coordinate_tensors=[t],

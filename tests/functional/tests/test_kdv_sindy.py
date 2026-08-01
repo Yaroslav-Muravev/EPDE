@@ -30,7 +30,7 @@ def test_kdv_discovery_sindy(operator_name, params, runtime_options):
     scenario = KdVTest(noise_level=0)
 
     if runtime_options["discovery"]:
-        search_obj = scenario.make_search()  # если для sindy нужен отдельный pool, см. ниже
+        search_obj = scenario.make_search(use_solver=runtime_options["use_solver"])  # если для sindy нужен отдельный pool, см. ниже
         search_obj, elapsed = scenario.run_sindy_discovery(
             search_obj,
             report_dir=runtime_options["report_dir"] if runtime_options["report"] else None,

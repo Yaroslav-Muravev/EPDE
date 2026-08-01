@@ -33,7 +33,7 @@ jobs:
       - name: Run discovery tests
         run: |
           pytest tests/functional/ -m functional \
-            --discovery --report \
+            --discovery --use-solver --report \
             --operators ${{ matrix.operator }} \
             --ignore=tests/functional/tests/test_ns.py \
             --timeout=3600

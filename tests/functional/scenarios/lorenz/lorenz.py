@@ -135,7 +135,7 @@ class LorenzTest(EquationTestTemplate):
         return t, data
 
     @pytest.mark.slow
-    def run_discovery(self, search_obj, report_dir=None, operator_name="unknown"):
+    def run_discovery(self, search_obj, report_dir=None, operator_name="unknown", use_solver=False):
         t, data = self.lorenz_data()
         noised_data = self.noise_data(data, self.noise_level)
         end = 1000
@@ -144,7 +144,7 @@ class LorenzTest(EquationTestTemplate):
         y = noised_data[:end, 1]
         z = noised_data[:end, 2]
 
-        epde_search_obj = EpdeSearch(use_solver=False, multiobjective_mode=True, use_pic=True, boundary=(100),
+        epde_search_obj = EpdeSearch(use_solver=use_solver, multiobjective_mode=True, use_pic=True, boundary=(100),
                                      coordinate_tensors=[t, ], verbose_params={'show_iter_idx': True},
                                      device='cuda' if torch.cuda.is_available() else 'cpu')
 
