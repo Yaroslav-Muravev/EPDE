@@ -27,11 +27,11 @@
             "net": [50, 50, 50],
             "activation": "tanh",
             "optimizer": "adam",
-            "lr": 1e-3,
-            "num_domain": 1000,
-            "num_boundary": 200,
-            "num_initial": 200,
-            "iterations": 1000,
+            "lr": 5e-4,
+            "num_domain": 2500,
+            "num_boundary": 500,
+            "num_initial": 500,
+            "iterations": 2000,
             "epochs": 1000,
             "verbose": false
         }
