@@ -28,13 +28,13 @@
             "activation": "tanh",
             "optimizer": "adam",
             "lr": 1e-3,
-            "num_domain": 1000,
-            "num_boundary": 200,
-            "num_initial": 200,
+            "num_domain": 2000,
+            "num_boundary": 500,
+            "num_initial": 500,
             "num_test": 504,
-            "iterations": 1000,
+            "iterations": 3000,
             "verbose": false,
-            "train_ratio": 0.5
+            "train_ratio": 0.8
         }
  	},
 	"_comment_legacy_aliases": "Param-registry aliases kept ONLY so the functional test harness (tests/functional) can fetch params by the historical operator names; the production search builds the new SolverFreeFitness / SolverBasedFitness hosts.",
