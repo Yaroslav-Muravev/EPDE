@@ -48,7 +48,7 @@ def ac_discovery(foldername, noise_level):
 
     dimensionality = data.ndim - 1
 
-    epde_search_obj = EpdeSearch(use_solver=False, multiobjective_mode=True,
+    epde_search_obj = EpdeSearch(use_solver=True, multiobjective_mode=True,
                                       use_pic=True, boundary=(5, 10), verbose_params = {'show_iter_idx' : True, 'show_iter_fitness' : True},
                                       coordinate_tensors=grid, device='cuda')
 

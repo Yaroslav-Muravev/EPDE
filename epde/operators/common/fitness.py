@@ -309,21 +309,27 @@ class SolverBasedFitness(CompoundOperator):
             self.primary.error_metric = self.params.get('error_metric', 'rmse')
             self.primary.penalty_coeff = self.params.get('penalty_coeff', 0.2)
 
-        keys, grids = global_var.grid_cache.get_all(mode='numpy')
-        mask_flat = global_var.grid_cache.g_func_mask.flatten()
+        keys, grids = global_var.grid_cache.get_all(mode='numpy', structural=True)
+        #mask_flat = global_var.grid_cache.g_func_mask.flatten()
 
         if isinstance(objective, SoEq):
             eqs = [objective.vals[v] for v in objective.vars_to_describe]
         else:
             eqs = [objective]
+        # data_list = []
+        # for eq in eqs:
+        #     _, target, _ = eq.evaluate(normalize=False, return_val=False)
+        #     data_list.append(target.reshape(-1))
         data_list = []
         for eq in eqs:
-            _, target, _ = eq.evaluate(normalize=False, return_val=False)
-            data_list.append(target.reshape(-1))
+            var_name = eq.main_var_to_explain
+            data = global_var.tensor_cache.get((var_name, (1.0,)), structural=False, torch_mode=False)
+            data_list.append(data.reshape(-1))
 
         try:
             solution_list, loss = self.adapter.solve(
                 equation_or_system=objective, grids=grids, data=data_list)
+
             if np.isnan(loss):
                 raise ValueError('NaN loss')
         except Exception as exc:
@@ -340,12 +346,19 @@ class SolverBasedFitness(CompoundOperator):
                              penalty_coeff=self.params.get('penalty_coeff', 0.2),
                              for_rps=False)
         # Pack per-eq masked (solution, data) for DeepXDEError.
-        masked_solutions = [solution_list[i][mask_flat] for i in range(len(eqs))]
-        masked_data = [data_list[i] for i in range(len(eqs))]
+        mask_flat = np.ones(len(data_list[0]), dtype=bool)
+        masked_solutions = solution_list
+        masked_data = data_list
         sctx = SolverContext(solution=masked_solutions, loss_add=loss,
                              g_fun_vals=masked_data,
                              penalty_coeff=self.params.get('penalty_coeff', 0.2),
                              pinn_loss_mult=0.0)
+        # masked_solutions = [solution_list[i][mask_flat] for i in range(len(eqs))]
+        # masked_data = [data_list[i] for i in range(len(eqs))]
+        # sctx = SolverContext(solution=masked_solutions, loss_add=loss,
+        #                      g_fun_vals=masked_data,
+        #                      penalty_coeff=self.params.get('penalty_coeff', 0.2),
+        #                      pinn_loss_mult=0.0)
 
         total_err = 0.0
         for eq_idx, eq in enumerate(eqs):
