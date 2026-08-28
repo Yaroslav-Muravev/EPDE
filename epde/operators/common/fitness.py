@@ -296,30 +296,114 @@ class SolverBasedFitness(CompoundOperator):
         if force_out_of_place:
             return sum_err
 
+    # def _apply_deepxde(self, objective, force_out_of_place):
+    #     try:
+    #         pretrained_net = deepcopy(global_var.solution_guess_nn)
+    #     except Exception:
+    #         pretrained_net = None
+    #     self.set_adapter(pretrained_net=pretrained_net)
+    #
+    #     # Keep the DeepXDEError filler's config in sync with host params
+    #     # (the legacy DeepXDEBasedFitness read these from self.params).
+    #     if isinstance(self.primary, DeepXDEError):
+    #         self.primary.error_metric = self.params.get('error_metric', 'rmse')
+    #         self.primary.penalty_coeff = self.params.get('penalty_coeff', 0.2)
+    #
+    #     keys, grids = global_var.grid_cache.get_all(mode='numpy', structural=True)
+    #     #mask_flat = global_var.grid_cache.g_func_mask.flatten()
+    #
+    #     if isinstance(objective, SoEq):
+    #         eqs = [objective.vals[v] for v in objective.vars_to_describe]
+    #     else:
+    #         eqs = [objective]
+    #     # data_list = []
+    #     # for eq in eqs:
+    #     #     _, target, _ = eq.evaluate(normalize=False, return_val=False)
+    #     #     data_list.append(target.reshape(-1))
+    #     data_list = []
+    #     for eq in eqs:
+    #         var_name = eq.main_var_to_explain
+    #         data = global_var.tensor_cache.get((var_name, (1.0,)), structural=False, torch_mode=False)
+    #         data_list.append(data.reshape(-1))
+    #
+    #     try:
+    #         solution_list, loss = self.adapter.solve(
+    #             equation_or_system=objective, grids=grids, data=data_list)
+    #
+    #         if np.isnan(loss):
+    #             raise ValueError('NaN loss')
+    #     except Exception as exc:
+    #         print(f'[SolverBasedFitness/deepxde] DeepXDE solve failed: {exc}')
+    #         if force_out_of_place:
+    #             return LOSS_NAN_VAL
+    #         for eq in eqs:
+    #             eq.fitness_value = LOSS_NAN_VAL
+    #             eq.fitness_calculated = True
+    #         return
+    #
+    #     sw_g, data_shape = self._build_fit_context()
+    #     fit_ctx = FitContext(g_fun_vals=sw_g, data_shape=data_shape,
+    #                          penalty_coeff=self.params.get('penalty_coeff', 0.2),
+    #                          for_rps=False)
+    #     # Pack per-eq masked (solution, data) for DeepXDEError.
+    #     mask_flat = np.ones(len(data_list[0]), dtype=bool)
+    #     masked_solutions = solution_list
+    #     masked_data = data_list
+    #     sctx = SolverContext(solution=masked_solutions, loss_add=loss,
+    #                          g_fun_vals=masked_data,
+    #                          penalty_coeff=self.params.get('penalty_coeff', 0.2),
+    #                          pinn_loss_mult=0.0)
+    #     # masked_solutions = [solution_list[i][mask_flat] for i in range(len(eqs))]
+    #     # masked_data = [data_list[i] for i in range(len(eqs))]
+    #     # sctx = SolverContext(solution=masked_solutions, loss_add=loss,
+    #     #                      g_fun_vals=masked_data,
+    #     #                      penalty_coeff=self.params.get('penalty_coeff', 0.2),
+    #     #                      pinn_loss_mult=0.0)
+    #
+    #     total_err = 0.0
+    #     for eq_idx, eq in enumerate(eqs):
+    #         err = self.primary.compute(eq, eq_idx, sctx)
+    #         if force_out_of_place:
+    #             total_err += err
+    #             continue
+    #         setattr(eq, self.primary.value_attr, err)
+    #         setattr(eq, self.primary.flag_attr, True)
+    #         if self.stability is not None:
+    #             setattr(eq, self.stability.value_attr, self.stability.compute(eq, fit_ctx))
+    #             setattr(eq, self.stability.flag_attr, True)
+    #     if force_out_of_place:
+    #         return total_err / max(len(eqs), 1)
+
     def _apply_deepxde(self, objective, force_out_of_place):
         try:
             pretrained_net = deepcopy(global_var.solution_guess_nn)
         except Exception:
             pretrained_net = None
+
+        # if pretrained_net is not None:
+        #     print("=== Pretrained network architecture ===")
+        #     print(pretrained_net)
+        #     # Если это Sequential, можно вывести количество слоёв
+        #     if hasattr(pretrained_net, 'layers'):
+        #         print(f"Number of layers: {len(pretrained_net.layers)}")
+        #         for i, layer in enumerate(pretrained_net.layers):
+        #             print(f"Layer {i}: {layer}")
+
         self.set_adapter(pretrained_net=pretrained_net)
 
-        # Keep the DeepXDEError filler's config in sync with host params
-        # (the legacy DeepXDEBasedFitness read these from self.params).
         if isinstance(self.primary, DeepXDEError):
             self.primary.error_metric = self.params.get('error_metric', 'rmse')
             self.primary.penalty_coeff = self.params.get('penalty_coeff', 0.2)
 
-        keys, grids = global_var.grid_cache.get_all(mode='numpy', structural=True)
-        #mask_flat = global_var.grid_cache.g_func_mask.flatten()
+        # Получаем полные сетки (без маски)
+        keys, grids = global_var.grid_cache.get_all(mode='numpy', structural=False)
 
         if isinstance(objective, SoEq):
             eqs = [objective.vals[v] for v in objective.vars_to_describe]
         else:
             eqs = [objective]
-        # data_list = []
-        # for eq in eqs:
-        #     _, target, _ = eq.evaluate(normalize=False, return_val=False)
-        #     data_list.append(target.reshape(-1))
+
+        # Получаем данные из кэша (полные)
         data_list = []
         for eq in eqs:
             var_name = eq.main_var_to_explain
@@ -329,7 +413,6 @@ class SolverBasedFitness(CompoundOperator):
         try:
             solution_list, loss = self.adapter.solve(
                 equation_or_system=objective, grids=grids, data=data_list)
-
             if np.isnan(loss):
                 raise ValueError('NaN loss')
         except Exception as exc:
@@ -345,7 +428,8 @@ class SolverBasedFitness(CompoundOperator):
         fit_ctx = FitContext(g_fun_vals=sw_g, data_shape=data_shape,
                              penalty_coeff=self.params.get('penalty_coeff', 0.2),
                              for_rps=False)
-        # Pack per-eq masked (solution, data) for DeepXDEError.
+
+        # Если вы не применяете маску, используйте единичную маску
         mask_flat = np.ones(len(data_list[0]), dtype=bool)
         masked_solutions = solution_list
         masked_data = data_list
@@ -353,12 +437,6 @@ class SolverBasedFitness(CompoundOperator):
                              g_fun_vals=masked_data,
                              penalty_coeff=self.params.get('penalty_coeff', 0.2),
                              pinn_loss_mult=0.0)
-        # masked_solutions = [solution_list[i][mask_flat] for i in range(len(eqs))]
-        # masked_data = [data_list[i] for i in range(len(eqs))]
-        # sctx = SolverContext(solution=masked_solutions, loss_add=loss,
-        #                      g_fun_vals=masked_data,
-        #                      penalty_coeff=self.params.get('penalty_coeff', 0.2),
-        #                      pinn_loss_mult=0.0)
 
         total_err = 0.0
         for eq_idx, eq in enumerate(eqs):

@@ -301,6 +301,10 @@ class DeepXDEAdapter:
             layer_size = [dim] + self.net + [var_count]
             net = dde.nn.FNN(layer_size, self.activation, self.kernel_initializer)
             model = dde.Model(data_obj, net)
+
+            if self.pretrained_net is not None:
+                self._load_pretrained_weights(net, self.pretrained_net)
+
             model.compile(self.optimizer, lr=self.lr, verbose=self.verbose)
             self._model = model
         else:
@@ -310,6 +314,80 @@ class DeepXDEAdapter:
             self._model.net.apply(reset_weights)
             self._model.data = data_obj
         return self._model
+
+    # def _load_pretrained_weights(self, dde_net, pretrained_torch_model):
+    #     print("=== Debug: attributes of dde_net ===")
+    #     print([attr for attr in dir(dde_net) if not attr.startswith('_')])
+    #     print("=== Debug: type of dde_net ===", type(dde_net))
+    #     # Если есть атрибут layers, выведем его
+    #     if hasattr(dde_net, 'layers'):
+    #         print("dde_net.layers:", dde_net.layers)
+    #     if hasattr(dde_net, 'net'):
+    #         print("dde_net.net:", dde_net.net)
+    #     # Если есть state_dict, можно посмотреть его ключи
+    #     if hasattr(dde_net, 'state_dict'):
+    #         print("dde_net state_dict keys:", dde_net.state_dict().keys())
+    #     """
+    #     Загружает веса из PyTorch модели в сеть DeepXDE.
+    #     Предполагается, что архитектуры совпадают (количество слоёв и нейронов).
+    #     """
+    #     # Получаем state_dict PyTorch модели
+    #     state_dict = pretrained_torch_model.state_dict()
+    #     # Извлекаем веса и смещения для линейных слоёв
+    #     # Обычно ключи имеют вид '0.weight', '0.bias', '2.weight', '2.bias', ...
+    #     # Для Sequential с активациями между слоями.
+    #     # Фильтруем только линейные слои (игнорируем активации, батч-норм и т.п.)
+    #     torch_layers = []
+    #     for name, param in state_dict.items():
+    #         if 'weight' in name or 'bias' in name:
+    #             # Определяем номер слоя
+    #             layer_idx = int(name.split('.')[0])
+    #             if layer_idx not in [l for l, _ in torch_layers]:
+    #                 torch_layers.append((layer_idx, param))
+    #     # Сортируем по индексу слоя
+    #     torch_layers.sort(key=lambda x: x[0])
+    #     # Теперь torch_layers содержит пары (индекс, параметр) для каждого линейного слоя
+    #     # В DeepXDE сеть состоит из слоёв, хранящихся в net._layers (список линейных слоёв)
+    #     # Проверим, что количество слоёв совпадает
+    #     if len(torch_layers) != len(dde_net._layers):
+    #         print(
+    #             f"Warning: Number of layers mismatch: PyTorch has {len(torch_layers)}, DeepXDE has {len(dde_net._layers)}. Skipping pretrained weights.")
+    #         return
+    #     # Загружаем веса
+    #     for i, (_, param) in enumerate(torch_layers):
+    #         # param может быть тензором весов или смещений
+    #         # Определяем, что это: weight или bias по размерности
+    #         if param.dim() == 2:
+    #             # Это весовая матрица
+    #             dde_net._layers[i].weight.data = torch.tensor(param.data.numpy(), dtype=torch.float32)
+    #         elif param.dim() == 1:
+    #             # Это смещение
+    #             dde_net._layers[i].bias.data = torch.tensor(param.data.numpy(), dtype=torch.float32)
+    #     print("Pretrained weights loaded successfully.")
+
+    def _load_pretrained_weights(self, dde_net, pretrained_torch_model):
+        """
+        Загружает веса из PyTorch модели (pretrained_torch_model) в сеть DeepXDE (dde_net).
+        Предполагается, что архитектуры совпадают (количество слоёв и нейронов).
+        """
+        # Получаем state_dict предобученной модели
+        torch_state = pretrained_torch_model.state_dict()
+        # Фильтруем только параметры линейных слоёв (веса и смещения) в порядке их следования
+        torch_params = []
+        for name, param in torch_state.items():
+            if 'weight' in name or 'bias' in name:
+                torch_params.append(param)
+        # Проверяем соответствие количества параметров
+        if len(torch_params) != len(dde_net.linears) * 2:
+            print(
+                f"Warning: number of parameters mismatch: pretrained has {len(torch_params)}, DeepXDE has {len(dde_net.linears) * 2}. Skipping.")
+            return
+        # Загружаем веса и смещения
+        for i, layer in enumerate(dde_net.linears):
+            # layer — это torch.nn.Linear
+            layer.weight.data = torch_params[2 * i].data.clone()
+            layer.bias.data = torch_params[2 * i + 1].data.clone()
+        print("Pretrained weights loaded successfully.")
 
     def _set_coordinate_info(self, coord_names):
         self.coord_names = coord_names

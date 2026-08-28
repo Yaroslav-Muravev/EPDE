@@ -24,7 +24,7 @@
         "pinn_loss_mult" : 1e4,
         "error_metric": "rmse",
         "deepxde_config": {
-            "net": [50, 50, 50],
+            "net": [112, 112],
             "activation": "tanh",
             "optimizer": "adam",
             "lr": 1e-3,
