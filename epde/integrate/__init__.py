@@ -3,7 +3,6 @@ from .bop import BOPElement, BoundaryConditions
 from .pinn_integration import SolverAdapter
 from .numeric_integration import OdeintAdapter
 
-
 # ``deepxde_integration`` does ``import deepxde``, which prints a backend
 # banner on first load. Defer that until the DeepXDE adapter is actually
 # requested so plain ``import epde`` / ``from epde.integrate import

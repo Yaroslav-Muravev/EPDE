@@ -51,7 +51,7 @@ from epde.operators.common.stability import (calculate_weights, vc_stability_tot
 from epde.operators.common.objectives import (
     FitContext, SolverContext, EquationObjective, # SolverObjective,
     Discrepancy, Instability, # L2Discrepancy, 
-    LOSS_NAN_VAL, #  SolverL2Discrepancy, PICError, DeepXDEError, 
+    LOSS_NAN_VAL #  SolverL2Discrepancy, PICError, DeepXDEError
 )
 from epde import _loop_stats
 
@@ -251,7 +251,7 @@ class SolverBasedFitness(CompoundOperator):
         self.adapter = None
         #: Resolved in ``set_adapter``; the device the net and the grids share.
         self.solver_device = 'cpu'
-        self.backend = backend
+        self.backend = 'deepxde' #backend
         self.masked = masked
         self.objectives = list(objectives) if objectives else []
         # objectives[0] fallback: see SolverFreeFitness.__init__ -- pass
@@ -423,16 +423,88 @@ class SolverBasedFitness(CompoundOperator):
         if force_out_of_place:
             return sum_err
 
+    # def _apply_deepxde(self, objective, force_out_of_place):
+    #     self.set_adapter(pretrained_net=self._pretrained_net())
+    #
+    #     # Keep the 'deepxde' family option's config in sync with host params
+    #     # (the legacy DeepXDEBasedFitness read these from self.params).
+    #     if getattr(self.primary, 'metric', None) == 'deepxde':
+    #         self.primary.error_metric = self.params.get('error_metric', 'rmse')
+    #         self.primary.penalty_coeff = self.params.get('penalty_coeff', 0.2)
+    #
+    #     samples = global_var.samples_manager
+    #     grids = samples.grids()
+    #     masks = samples.gFunc('m')
+    #
+    #     if isinstance(objective, SoEq):
+    #         eqs = [objective.vals[v] for v in objective.vars_to_describe]
+    #     else:
+    #         eqs = [objective]
+    #     # ``evaluate`` returns a per-trajectory dict; the old code called
+    #     # ``.reshape(-1)`` straight on it.
+    #     targets = [eq.evaluate(active_only=True)[0] for eq in eqs]
+    #
+    #     # One solve per trajectory: DeepXDE builds a single geometry from a
+    #     # single grid, and the fillers index sctx by trajectory key.
+    #     solutions, per_sample_data, losses = {}, {}, []
+    #     try:
+    #         for domain_key in samples.trajecatoryIDs:
+    #             data_list = [np.asarray(target[domain_key]).reshape(-1)
+    #                          for target in targets]
+    #             solution_list, loss = self.adapter.solve(
+    #                 equation_or_system=objective, grids=grids[domain_key],
+    #                 data=data_list, domain_key=domain_key)
+    #             if np.isnan(loss):
+    #                 raise ValueError('NaN loss')
+    #             flat_mask = np.asarray(masks[domain_key]).reshape(-1)
+    #             solutions[domain_key] = [np.asarray(sol).reshape(-1)[flat_mask]
+    #                                      for sol in solution_list]
+    #             per_sample_data[domain_key] = data_list
+    #             losses.append(float(loss))
+    #     except Exception as exc:
+    #         print(f'[SolverBasedFitness/deepxde] DeepXDE solve failed: {exc}')
+    #         if force_out_of_place:
+    #             return LOSS_NAN_VAL
+    #         for eq in eqs:
+    #             eq.fitness_value = LOSS_NAN_VAL
+    #             eq.fitness_calculated = True
+    #         return
+    #     loss = float(np.mean(losses))
+    #
+    #     sw_g, data_shape = self._build_fit_context()
+    #     fit_ctx = FitContext(g_fun_vals=sw_g, data_shape=data_shape,
+    #                          penalty_coeff=self.params.get('penalty_coeff', 0.2),
+    #                          for_rps=False)
+    #     # DeepXDEError reads sctx.solution[key][eq_idx] against
+    #     # sctx.g_fun_vals[key][eq_idx] -- masked solution against the
+    #     # inner-domain data, per trajectory.
+    #     sctx = SolverContext(solution=solutions, loss_add=loss,
+    #                          g_fun_vals=per_sample_data,
+    #                          penalty_coeff=self.params.get('penalty_coeff', 0.2),
+    #                          pinn_loss_mult=0.0)
+    #
+    #     total_err = 0.0
+    #     for eq_idx, eq in enumerate(eqs):
+    #         err = self.primary.compute(eq, eq_idx, sctx)
+    #         if force_out_of_place:
+    #             total_err += err
+    #             continue
+    #         setattr(eq, self.primary.value_attr, err)
+    #         setattr(eq, self.primary.flag_attr, True)
+    #         for filler in self.objectives:
+    #             if filler is self.primary:
+    #                 continue
+    #             setattr(eq, filler.value_attr, filler.compute(eq, fit_ctx))
+    #             setattr(eq, filler.flag_attr, True)
+    #     if force_out_of_place:
+    #         return total_err / max(len(eqs), 1)
+
     def _apply_deepxde(self, objective, force_out_of_place):
+        # Передаём предобученную ANN в адаптер (та же логика, что и в _apply_autograd).
         self.set_adapter(pretrained_net=self._pretrained_net())
 
-        # Keep the 'deepxde' family option's config in sync with host params
-        # (the legacy DeepXDEBasedFitness read these from self.params).
-        if getattr(self.primary, 'metric', None) == 'deepxde':
-            self.primary.error_metric = self.params.get('error_metric', 'rmse')
-            self.primary.penalty_coeff = self.params.get('penalty_coeff', 0.2)
-
         samples = global_var.samples_manager
+        # Сетки берём через samples_manager (по траекториям), не через grid_cache.
         grids = samples.grids()
         masks = samples.gFunc('m')
 
@@ -440,27 +512,45 @@ class SolverBasedFitness(CompoundOperator):
             eqs = [objective.vals[v] for v in objective.vars_to_describe]
         else:
             eqs = [objective]
-        # ``evaluate`` returns a per-trajectory dict; the old code called
-        # ``.reshape(-1)`` straight on it.
+
+        # ``evaluate`` возвращает dict по траекториям.
         targets = [eq.evaluate(active_only=True)[0] for eq in eqs]
 
-        # One solve per trajectory: DeepXDE builds a single geometry from a
-        # single grid, and the fillers index sctx by trajectory key.
+        # По одной решённой траектории за вызов: DeepXDE строит одну геометрию
+        # из одной сетки, а филлеры индексируют sctx по ключу траектории.
         solutions, per_sample_data, losses = {}, {}, []
         try:
             for domain_key in samples.trajecatoryIDs:
                 data_list = [np.asarray(target[domain_key]).reshape(-1)
                              for target in targets]
                 solution_list, loss = self.adapter.solve(
-                    equation_or_system=objective, grids=grids[domain_key],
-                    data=data_list, domain_key=domain_key)
+                    equation_or_system=objective,
+                    grids=grids[domain_key],
+                    data=data_list,
+                    domain_key=domain_key,
+                )
+
                 if np.isnan(loss):
                     raise ValueError('NaN loss')
-                flat_mask = np.asarray(masks[domain_key]).reshape(-1)
-                solutions[domain_key] = [np.asarray(sol).reshape(-1)[flat_mask]
-                                         for sol in solution_list]
-                per_sample_data[domain_key] = data_list
+                #flat_mask = np.asarray(masks[domain_key]).reshape(-1)
+                solutions[domain_key] = np.stack(
+                    [np.asarray(sol).reshape(-1) for sol in solution_list],
+                    axis = -1,
+                )
+                per_sample_data[domain_key] = np.stack(
+                    [np.asarray(d).reshape(-1) for d in data_list],
+                    axis=-1,
+                )
                 losses.append(float(loss))
+
+                for i in range(solutions[domain_key].shape[1]):
+                    sol_i = solutions[domain_key][:, i]
+                    dat_i = per_sample_data[domain_key][:, i]
+                    rmse = np.sqrt(np.mean((sol_i - dat_i) ** 2))
+                    print(f"[DEBUG] eq[{i}]: "
+                          f"sol=[{sol_i.min():.3f}, {sol_i.max():.3f}], "
+                          f"data=[{dat_i.min():.3f}, {dat_i.max():.3f}], rmse={rmse:.4f}")
+
         except Exception as exc:
             print(f'[SolverBasedFitness/deepxde] DeepXDE solve failed: {exc}')
             if force_out_of_place:
@@ -469,15 +559,18 @@ class SolverBasedFitness(CompoundOperator):
                 eq.fitness_value = LOSS_NAN_VAL
                 eq.fitness_calculated = True
             return
+
+        # Среднее, не сумма: одинаковый по смыслу loss на разных сэмплах.
         loss = float(np.mean(losses))
 
         sw_g, data_shape = self._build_fit_context()
         fit_ctx = FitContext(g_fun_vals=sw_g, data_shape=data_shape,
                              penalty_coeff=self.params.get('penalty_coeff', 0.2),
                              for_rps=False)
-        # DeepXDEError reads sctx.solution[key][eq_idx] against
-        # sctx.g_fun_vals[key][eq_idx] -- masked solution against the
-        # inner-domain data, per trajectory.
+
+        # DeepXDEError читает sctx.solution[key][eq_idx] против
+        # sctx.g_fun_vals[key][eq_idx] — маскированное решение против
+        # inner-domain данных, по траекториям.
         sctx = SolverContext(solution=solutions, loss_add=loss,
                              g_fun_vals=per_sample_data,
                              penalty_coeff=self.params.get('penalty_coeff', 0.2),
@@ -498,6 +591,9 @@ class SolverBasedFitness(CompoundOperator):
                 setattr(eq, filler.flag_attr, True)
         if force_out_of_place:
             return total_err / max(len(eqs), 1)
+
+    def use_default_tags(self):
+        self._tags = {'fitness evaluation', 'chromosome level', 'contains suboperators', 'inplace'}
 
     def use_default_tags(self):
         self._tags = {'fitness evaluation', 'chromosome level', 'no suboperators', 'inplace'}
