@@ -552,7 +552,9 @@ class SolverBasedFitness(CompoundOperator):
                           f"data=[{dat_i.min():.3f}, {dat_i.max():.3f}], rmse={rmse:.4f}")
 
         except Exception as exc:
-            print(f'[SolverBasedFitness/deepxde] DeepXDE solve failed: {exc}')
+            import traceback
+            print(f'[DEBUG] Exception: {type(exc).__name__}: {exc}')
+            traceback.print_exc()      # <-- ЭТО ПОКАЖЕТ ТОЧНУЮ СТРОКУ
             if force_out_of_place:
                 return LOSS_NAN_VAL
             for eq in eqs:
