@@ -171,15 +171,17 @@ class Solver2D(SolverStrategy):
                 if len(indices) == 0:
                     return lambda x: np.full(
                         (x.shape[0], 1), adapter.fallback_bc_value)
-                tree = cKDTree(masked_coords_swapped_train[indices])
+                local_coords = masked_coords_swapped_train[indices]   # <-- train, не all
+                local_data = data_train[indices] 
+                tree = cKDTree(local_coords)
 
                 def func(x):
                     if hasattr(x, 'detach'):
                         x_np = x.detach().cpu().numpy()
                     else:
                         x_np = np.asarray(x)
-                    _, idx = tree.query(x_np)
-                    return data_masked[indices][idx].reshape(-1, 1)
+                    _, local_idx= tree.query(x_np)
+                    return local_data[local_idx].reshape(-1, 1)
                 return func
 
             if len(left_idx) > 0:
@@ -204,7 +206,7 @@ class Solver2D(SolverStrategy):
 
         # --- DATA LOSS: сеть должна совпадать с наблюдениями ---
         # Координаты в порядке DeepXDE для GeometryXTime: (x, t)
-        coords_data = np.stack([x_all, t_all], axis=1)  # (n_points, 2)
+        coords_data = np.stack([x_train, t_train], axis=1)  # (n_points, 2)
 
         for var_idx, data_train in enumerate(data_train_list):
             # Работаем на той же подвыборке, что и PDE (t_all), чтобы data loss
@@ -411,7 +413,7 @@ class DeepXDEAdapter:
         self.net = self.config.get('net', [50, 50, 50, 50])
         self.activation = self.config.get('activation', 'tanh')
         self.optimizer = self.config.get('optimizer', 'adam')
-        self.lr = self.config.get('lr', 1e-3)
+        self.lr = self.config.get('lr', 1e-4)
         self.kernel_initializer = self.config.get(
             'kernel_initializer', 'Glorot normal')
         self.num_domain = int(self.config.get('num_domain', 2000))
@@ -425,7 +427,7 @@ class DeepXDEAdapter:
         self.verbose = config.get('verbose', False)
 
         # --- TRAIN / TEST SPLIT ---
-        self.train_ratio = float(config.get('train_ratio', 1.0))
+        self.train_ratio = 0.5 #float(config.get('train_ratio', 1.0))
         self.num_test = int(self.config.get('num_test', 500))
 
         # --- ADAPTIVE LOSS BALANCER ---
