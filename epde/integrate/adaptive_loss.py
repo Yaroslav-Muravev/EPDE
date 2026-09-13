@@ -34,9 +34,6 @@ class AdaptiveLoss(dde.callbacks.Callback):
         except AttributeError:
             self.weights = None
         self._loss_history = []
-        print(f"[AdaptiveLossBalancer] Initialized. "
-              f"priority={self.priority}, "
-              f"bounds=({self.weight_min}, {self.weight_max})")
 
     def on_epoch_end(self):
         try:
@@ -63,26 +60,11 @@ class AdaptiveLoss(dde.callbacks.Callback):
         # recent: (window_size, n_losses) или (window_size,) если n_losses==1
         variances = np.atleast_1d(np.var(recent, axis=0) + self.epsilon)
 
-        print("[DEBUG balancer] epoch:", getattr(self.model.train_state, 'epoch', None))
-        print("[DEBUG balancer] model.loss_weights:", self.model.loss_weights)
-        try:
-            print("[DEBUG balancer] losshistory.loss_train[-1]:",
-                  self.model.losshistory.loss_train[-1])
-            print("[DEBUG balancer] len(losshistory.loss_train[-1]):",
-                  len(self.model.losshistory.loss_train[-1]))
-        except Exception as e:
-            print("[DEBUG balancer] losshistory err:", e)
-        try:
-            print("[DEBUG balancer] train_state.loss_train[-1]:",
-                  self.model.train_state.loss_train[-1])
-        except Exception as e:
-            print("[DEBUG balancer] train_state err:", e)
-
         if self.priority is not None and self.priority.size == variances.size:
             prio = self.priority
         else:
             if self.priority is not None:
-                print(f"[AdaptiveLossBalancer] priority size "
+                print(f"[AdaptiveLoss] priority size "
                       f"{self.priority.size} != n_losses {variances.size}, "
                       f"ignoring priority.")
             prio = np.ones_like(variances)
@@ -109,7 +91,5 @@ class AdaptiveLoss(dde.callbacks.Callback):
                 lr=self.lr,
                 loss_weights=self.weights.tolist(),
             )
-            print(f"[AdaptiveLossBalancer] Updated weights: "
-                  f"{np.round(self.weights, 4).tolist()}")
         except Exception as e:
-            print(f"[AdaptiveLossBalancer] Recompile failed: {e}")
+            print(f"[AdaptiveLoss] Recompile failed: {e}")
