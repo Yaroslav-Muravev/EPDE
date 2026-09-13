@@ -471,30 +471,6 @@ class DeepXDEAdapter:
             key = global_var.samples_manager.trajecatoryIDs[0]
         return np.asarray(global_var.samples_manager.gFunc('m')[key])
 
-    # def _get_or_create_model(self, data_obj, dim, var_count):
-    #     if self._model is None:
-    #         layer_size = [dim] + self.net + [var_count]
-    #         net = dde.nn.FNN(layer_size, self.activation,
-    #                          self.kernel_initializer)
-    #         # --- PRETRAINED NET LOADING ---
-    #         if self.pretrained_net is not None:
-    #             self._load_pretrained_weights(net, self.pretrained_net)
-    #         model = dde.Model(data_obj, net)
-    #         model.compile(self.optimizer, lr=self.lr, verbose=0)#self.verbose)
-    #         self._model = model
-    #     else:
-    #         def reset_weights(m):
-    #             if hasattr(m, 'reset_parameters'):
-    #                 m.reset_parameters()
-    #         self._model.net.apply(reset_weights)
-    #         # Перезагружаем pretrained веса — иначе после reset они теряются
-    #         # и обучение каждого кандидата начинается с нуля.
-    #         if self.pretrained_net is not None:
-    #             self._load_pretrained_weights(
-    #                 self._model.net, self.pretrained_net)
-    #         self._model.data = data_obj
-    #     return self._model
-
     def _get_or_create_model(self, data_obj, dim, var_count, loss_weights=None):
         if self._model is None:
             layer_size = [dim] + self.net + [var_count]
