@@ -5,28 +5,38 @@ import numpy as np
 class AdaptiveLoss(dde.callbacks.Callback):
     def __init__(self, model, optimizer, lr,
                  update_every=1000, window_size=20,
-                 alpha=0.9, max_delta=0.5, epsilon=1e-8):
+                 alpha=0.9, max_delta=0.5, epsilon=1e-8,
+                 priority=None,
+                 weight_min=None,
+                 weight_max=None):
         super().__init__()
         self.model = model
-        self.optimizer = optimizer   # строка, например 'adam'
+        self.optimizer = optimizer
         self.lr = lr
         self.update_every = update_every
         self.window_size = window_size
         self.alpha = alpha
         self.max_delta = max_delta
         self.epsilon = epsilon
+        self.priority = None if priority is None else np.atleast_1d(
+            np.asarray(priority, dtype=float))
+        self.weight_min = weight_min
+        self.weight_max = weight_max
 
         self.weights = None
         self._loss_history = []
 
     def on_train_begin(self):
-        # Достаём текущие веса, если DeepXDE их хранит
         try:
             lw = self.model.loss_weights
-            self.weights = np.array(lw, dtype=float) if lw is not None else None
+            self.weights = None if lw is None else np.atleast_1d(
+                np.array(lw, dtype=float))
         except AttributeError:
             self.weights = None
         self._loss_history = []
+        print(f"[AdaptiveLossBalancer] Initialized. "
+              f"priority={self.priority}, "
+              f"bounds=({self.weight_min}, {self.weight_max})")
 
     def on_epoch_end(self):
         try:
@@ -37,19 +47,12 @@ class AdaptiveLoss(dde.callbacks.Callback):
             return
 
         try:
-            current_losses = np.array(self.model.losshistory.loss_train[-1], dtype=float)
+            current_losses = np.atleast_1d(
+                np.array(self.model.losshistory.loss_train[-1], dtype=float))
         except (IndexError, AttributeError):
             return
 
-        if self._loss_history and np.allclose(self._loss_history[-1], current_losses):
-            return
-
-        if current_losses.ndim == 0 or current_losses.size < 2:
-            print("[AdaptiveLoss] WARNING: only 1 loss component visible, "
-                  "cannot balance. Skipping update.")
-            return
-
-        if self.weights is None or len(self.weights) != current_losses.size:
+        if self.weights is None or self.weights.size != current_losses.size:
             self.weights = np.ones_like(current_losses)
 
         self._loss_history.append(current_losses)
@@ -57,16 +60,47 @@ class AdaptiveLoss(dde.callbacks.Callback):
             return
 
         recent = np.array(self._loss_history[-self.window_size:])
-        variances = np.var(recent, axis=0) + self.epsilon
+        # recent: (window_size, n_losses) или (window_size,) если n_losses==1
+        variances = np.atleast_1d(np.var(recent, axis=0) + self.epsilon)
 
-        target = 1.0 / variances
+        print("[DEBUG balancer] epoch:", getattr(self.model.train_state, 'epoch', None))
+        print("[DEBUG balancer] model.loss_weights:", self.model.loss_weights)
+        try:
+            print("[DEBUG balancer] losshistory.loss_train[-1]:",
+                  self.model.losshistory.loss_train[-1])
+            print("[DEBUG balancer] len(losshistory.loss_train[-1]):",
+                  len(self.model.losshistory.loss_train[-1]))
+        except Exception as e:
+            print("[DEBUG balancer] losshistory err:", e)
+        try:
+            print("[DEBUG balancer] train_state.loss_train[-1]:",
+                  self.model.train_state.loss_train[-1])
+        except Exception as e:
+            print("[DEBUG balancer] train_state err:", e)
+
+        if self.priority is not None and self.priority.size == variances.size:
+            prio = self.priority
+        else:
+            if self.priority is not None:
+                print(f"[AdaptiveLossBalancer] priority size "
+                      f"{self.priority.size} != n_losses {variances.size}, "
+                      f"ignoring priority.")
+            prio = np.ones_like(variances)
+
+        target = prio / variances
         target = target / np.sum(target)
 
         smoothed = self.alpha * self.weights + (1.0 - self.alpha) * target
-        delta = np.clip(smoothed - self.weights, -self.max_delta, self.max_delta)
+        delta = np.clip(smoothed - self.weights,
+                        -self.max_delta, self.max_delta)
         new_weights = self.weights + delta
-        new_weights = new_weights / np.sum(new_weights)
 
+        if self.weight_min is not None:
+            new_weights = np.maximum(new_weights, self.weight_min)
+        if self.weight_max is not None:
+            new_weights = np.minimum(new_weights, self.weight_max)
+
+        new_weights = new_weights / np.sum(new_weights)
         self.weights = new_weights
 
         try:
@@ -74,9 +108,8 @@ class AdaptiveLoss(dde.callbacks.Callback):
                 self.optimizer,
                 lr=self.lr,
                 loss_weights=self.weights.tolist(),
-                verbose=False,
             )
-            #print(f"[AdaptiveLoss] Updated weights: "
-            #      f"{np.round(self.weights, 4).tolist()}")
+            print(f"[AdaptiveLossBalancer] Updated weights: "
+                  f"{np.round(self.weights, 4).tolist()}")
         except Exception as e:
-            print(f"[AdaptiveLoss] Recompile failed: {e}")
+            print(f"[AdaptiveLossBalancer] Recompile failed: {e}")

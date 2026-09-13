@@ -213,7 +213,7 @@ class Solver2D(SolverStrategy):
             data_flat = data_train.ravel()
 
             # Опционально: даунсэмплинг, чтобы не грузить обучение тысячами точек
-            max_pts = 150
+            max_pts = 200
             if len(coords_data) > max_pts:
                 idx = np.linspace(0, len(coords_data) - 1, max_pts).astype(int)
                 x_pts = coords_data[idx]
@@ -235,8 +235,10 @@ class Solver2D(SolverStrategy):
             num_initial=adapter.num_initial,
             num_test=adapter.num_test)
 
+        n_losses = 1 + len(bcs)
+        initial_weights = [1.0] * n_losses
         model = adapter._get_or_create_model(data_obj, dim=2,
-                                             var_count=len(var_names))
+                                             var_count=len(var_names), loss_weights=initial_weights,)
 
         callbacks = []
         if adapter.use_adaptive_balancer:
@@ -248,6 +250,9 @@ class Solver2D(SolverStrategy):
                 window_size=adapter.balancer_window_size,
                 alpha=adapter.balancer_alpha,
                 max_delta=adapter.balancer_max_delta,
+                priority=adapter.balancer_priority,
+                weight_min=adapter.balancer_weight_min,
+                weight_max=adapter.balancer_weight_max,
             )
             callbacks.append(balancer)
 
@@ -408,15 +413,15 @@ class DeepXDEAdapter:
     def __init__(self, pretrained_net=None, **config):
         self.pretrained_net = pretrained_net
         self.config = config or {}
-        self.net = self.config.get('net', [50, 50, 50, 50])
+        self.net = self.config.get('net', [100, 100, 100])#[50, 50, 50, 50])
         self.activation = self.config.get('activation', 'tanh')
         self.optimizer = self.config.get('optimizer', 'adam')
         self.lr = self.config.get('lr', 1e-3)
         self.kernel_initializer = self.config.get(
             'kernel_initializer', 'Glorot normal')
         self.num_domain = int(self.config.get('num_domain', 2000))
-        self.num_boundary = int(self.config.get('num_boundary', 500))
-        self.num_initial = int(self.config.get('num_initial', 500))
+        self.num_boundary = 1000 #int(self.config.get('num_boundary', 500))
+        self.num_initial = 1000 #int(self.config.get('num_initial', 500))
         # ``iterations`` — современное имя в DeepXDE; ``epochs`` — fallback.
         self.iterations = int(self.config.get(
             'iterations', self.config.get('epochs', 10000)))
@@ -438,6 +443,9 @@ class DeepXDEAdapter:
         self.balancer_alpha = float(config.get('balancer_alpha', 0.9))
         self.balancer_max_delta = float(
             config.get('balancer_max_delta', 0.3))
+        self.balancer_priority = [1.0, 5.0, 5.0] #config.get('balancer_priority', None)
+        self.balancer_weight_min = 0.05 #config.get('balancer_weight_min', None)
+        self.balancer_weight_max = 0.7 #config.get('balancer_weight_max', None)
 
         self.coordinate_mapping = self.config.get('coordinate_mapping', None)
         self.coord_names = None
@@ -461,27 +469,49 @@ class DeepXDEAdapter:
             key = global_var.samples_manager.trajecatoryIDs[0]
         return np.asarray(global_var.samples_manager.gFunc('m')[key])
 
-    def _get_or_create_model(self, data_obj, dim, var_count):
+    # def _get_or_create_model(self, data_obj, dim, var_count):
+    #     if self._model is None:
+    #         layer_size = [dim] + self.net + [var_count]
+    #         net = dde.nn.FNN(layer_size, self.activation,
+    #                          self.kernel_initializer)
+    #         # --- PRETRAINED NET LOADING ---
+    #         if self.pretrained_net is not None:
+    #             self._load_pretrained_weights(net, self.pretrained_net)
+    #         model = dde.Model(data_obj, net)
+    #         model.compile(self.optimizer, lr=self.lr, verbose=0)#self.verbose)
+    #         self._model = model
+    #     else:
+    #         def reset_weights(m):
+    #             if hasattr(m, 'reset_parameters'):
+    #                 m.reset_parameters()
+    #         self._model.net.apply(reset_weights)
+    #         # Перезагружаем pretrained веса — иначе после reset они теряются
+    #         # и обучение каждого кандидата начинается с нуля.
+    #         if self.pretrained_net is not None:
+    #             self._load_pretrained_weights(
+    #                 self._model.net, self.pretrained_net)
+    #         self._model.data = data_obj
+    #     return self._model
+
+    def _get_or_create_model(self, data_obj, dim, var_count, loss_weights=None):
         if self._model is None:
             layer_size = [dim] + self.net + [var_count]
-            net = dde.nn.FNN(layer_size, self.activation,
-                             self.kernel_initializer)
-            # --- PRETRAINED NET LOADING ---
+            net = dde.nn.FNN(layer_size, self.activation, self.kernel_initializer)
             if self.pretrained_net is not None:
                 self._load_pretrained_weights(net, self.pretrained_net)
             model = dde.Model(data_obj, net)
-            model.compile(self.optimizer, lr=self.lr, verbose=0)#self.verbose)
+            model.compile(self.optimizer, lr=self.lr,
+                          loss_weights=loss_weights or [1.0],
+                          verbose=self.verbose)
             self._model = model
         else:
             def reset_weights(m):
                 if hasattr(m, 'reset_parameters'):
                     m.reset_parameters()
+
             self._model.net.apply(reset_weights)
-            # Перезагружаем pretrained веса — иначе после reset они теряются
-            # и обучение каждого кандидата начинается с нуля.
             if self.pretrained_net is not None:
-                self._load_pretrained_weights(
-                    self._model.net, self.pretrained_net)
+                self._load_pretrained_weights(self._model.net, self.pretrained_net)
             self._model.data = data_obj
         return self._model
 
