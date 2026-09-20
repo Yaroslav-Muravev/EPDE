@@ -7,7 +7,7 @@ from scipy.spatial import cKDTree
 from epde.structure.main_structures import Equation, SoEq
 import epde.globals as global_var
 import deepxde as dde
-from epde.integrate.adaptive_loss import AdaptiveLoss
+from epde.integrate.adaptive_loss import AdaptiveLoss, compute_variance_scale_2d
 from abc import ABC, abstractmethod
 
 os.makedirs(os.path.expanduser('~/.deepxde'), exist_ok=True)
@@ -95,13 +95,12 @@ class Solver1D(SolverStrategy):
                                              var_count=len(var_names))
 
         callbacks = []
-        if adapter.use_adaptive_balancer:
+        if adapter.use_adaptive_balancer and vscale is not None:
             balancer = AdaptiveLoss(
                 model,
-                update_every=adapter.balancer_update_every,
-                window_size=adapter.balancer_window_size,
-                alpha=adapter.balancer_alpha,
-                max_delta=adapter.balancer_max_delta,
+                variance_scale=vscale,
+                weight_min=getattr(adapter, 'balancer_weight_min', None),
+                weight_max=getattr(adapter, 'balancer_weight_max', None),
             )
             callbacks.append(balancer)
 
@@ -237,24 +236,30 @@ class Solver2D(SolverStrategy):
             num_initial=adapter.num_initial,
             num_test=adapter.num_test)
 
-        n_losses = 1 + len(bcs)
-        initial_weights = [1.0] * n_losses
+        # --- variance yardsticks для 2D ---
+        # --- variance yardsticks ---
+        try:
+            vscale = compute_variance_scale_2d(
+                u_data=data_train_list[0].reshape(-1),
+                t_all=t_train,
+                x_all=x_train,
+                t_split_frac=adapter.train_ratio,
+            )
+            print(f"[variance_scale_2d] vscale = {vscale}")
+        except Exception as e:
+            print(f"[variance_scale_2d] failed: {e}")
+            vscale = None
+
         model = adapter._get_or_create_model(data_obj, dim=2,
-                                             var_count=len(var_names), loss_weights=initial_weights,)
+                                             var_count=len(var_names))
 
         callbacks = []
-        if adapter.use_adaptive_balancer:
+        if adapter.use_adaptive_balancer and vscale is not None:
             balancer = AdaptiveLoss(
                 model,
-                optimizer=adapter.optimizer,
-                lr=adapter.lr,
-                update_every=adapter.balancer_update_every,
-                window_size=adapter.balancer_window_size,
-                alpha=adapter.balancer_alpha,
-                max_delta=adapter.balancer_max_delta,
-                priority=adapter.balancer_priority,
-                weight_min=adapter.balancer_weight_min,
-                weight_max=adapter.balancer_weight_max,
+                variance_scale=vscale,
+                weight_min=getattr(adapter, 'balancer_weight_min', None),
+                weight_max=getattr(adapter, 'balancer_weight_max', None),
             )
             callbacks.append(balancer)
 
@@ -263,7 +268,6 @@ class Solver2D(SolverStrategy):
                 iterations=adapter.iterations,
                 verbose=adapter.verbose,
                 callbacks=callbacks,
-                display_every=adapter.balancer_update_every,
             )
             print("[DEBUG] final losses:", losshistory.loss_train[-1])
             final_loss = float(losshistory.loss_train[-1][0]) \
@@ -421,12 +425,11 @@ class DeepXDEAdapter:
         self.lr = self.config.get('lr', 1e-4)
         self.kernel_initializer = self.config.get(
             'kernel_initializer', 'Glorot normal')
-        self.num_domain = int(self.config.get('num_domain', 2000))
-        self.num_boundary = 1000 #int(self.config.get('num_boundary', 500))
-        self.num_initial = 1000 #int(self.config.get('num_initial', 500))
+        self.num_domain = 2000 #int(self.config.get('num_domain', 2000))
+        self.num_boundary = 500 #int(self.config.get('num_boundary', 500))
+        self.num_initial = 500 #int(self.config.get('num_initial', 500))
         # ``iterations`` — современное имя в DeepXDE; ``epochs`` — fallback.
-        self.iterations = int(self.config.get(
-            'iterations', self.config.get('epochs', 10000)))
+        self.iterations = 4000 #int(self.config.get('iterations', self.config.get('epochs', 10000)))
         self.bc_type = self.config.get('bc_type', 'Dirichlet')
         self.fallback_bc_value = self.config.get('fallback_bc_value', 0.0)
         self.verbose = config.get('verbose', False)
@@ -438,16 +441,8 @@ class DeepXDEAdapter:
         # --- ADAPTIVE LOSS BALANCER ---
         self.use_adaptive_balancer = bool(
             config.get('use_adaptive_balancer', True))
-        self.balancer_update_every = int(
-            config.get('balancer_update_every', 200))
-        self.balancer_window_size = int(
-            config.get('balancer_window_size', 5))
-        self.balancer_alpha = float(config.get('balancer_alpha', 0.9))
-        self.balancer_max_delta = float(
-            config.get('balancer_max_delta', 0.3))
-        self.balancer_priority = [1.0, 5.0, 5.0] #config.get('balancer_priority', None)
-        self.balancer_weight_min = 0.05 #config.get('balancer_weight_min', None)
-        self.balancer_weight_max = 0.7 #config.get('balancer_weight_max', None)
+        self.balancer_weight_min = config.get('balancer_weight_min', None)
+        self.balancer_weight_max = config.get('balancer_weight_max', None)
 
         self.coordinate_mapping = self.config.get('coordinate_mapping', None)
         self.coord_names = None
