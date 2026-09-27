@@ -489,32 +489,65 @@ class Discrepancy(EquationObjective):
         return float(rl_error + sctx.pinn_loss_mult * float(sctx.loss_add))
 
     def _compute_deepxde(self, eq, eq_idx, sctx):
-        # sctx.solution[eq_idx] = masked solution, sctx.g_fun_vals[eq_idx] =
-        # masked data (packed by SolverBasedFitness's deepxde branch).
-        masked_solution = {key: sol[eq_idx] for key, sol in sctx.solution.items()} # [eq_idx]
-        masked_data = {key: gfunc_val[eq_idx] for key, gfunc_val in sctx.g_fun_vals.items()} 
+        masked_solution = {key: sol[..., eq_idx]
+                           for key, sol in sctx.solution.items()}
+        masked_data = {key: gfunc_val[..., eq_idx]
+                       for key, gfunc_val in sctx.g_fun_vals.items()}
+
         metric = self.error_metric
-        # if metric == 'l2':
-        #     err = np.linalg.norm(masked_solution - masked_data, ord=2)
-        # elif metric == 'mae':
-        #     err = np.mean(np.abs(masked_solution - masked_data))
-        # else:  # 'rmse' default
-        #     err = np.sqrt(np.mean((masked_solution - masked_data) ** 2))
+
+        def _rmse_rel(diff, ref):
+            rmse = np.sqrt(np.mean(diff ** 2))
+            scale = np.std(ref) + 1e-12
+            return rmse / scale
 
         if metric == 'l2':
-            # ``dictSubtr`` below already forms (solution - data); subtracting
-            # ``masked_data`` again here double-counted it.
-            err_func = lambda x: np.linalg.norm(x, ord=2)
+            # L2 / ||ref|| — то же самое, что solver_l2/pic делают
+            err_func = lambda diff, ref: (
+                    np.linalg.norm(diff, ord=2) / (np.linalg.norm(ref, ord=2) + 1e-12))
         elif metric == 'mae':
-            err_func = lambda x: np.mean(np.abs(x))
-        else:  # 'rmse' default
-            err_func = lambda x: np.sqrt(np.mean(x**2))
-            # err = np.sqrt(np.mean((masked_solution - masked_data) ** 2))
-        err = np.mean(list(dictApplyUFunc(err_func, dictSubtr(masked_solution, masked_data)).values()))
+            err_func = lambda diff, ref: (
+                    np.mean(np.abs(diff)) / (np.mean(np.abs(ref)) + 1e-12))
+        else:  # 'rmse'
+            err_func = _rmse_rel
 
-        if np.sum(eq.weights_final) == 0:
+        diffs = dictSubtr(masked_solution, masked_data)
+        # dictApplyUFunc не даёт вызванному ключа, но порядок dict.values()
+        # совпадает, если ключи одинаковые — а они одинаковые (traj IDs).
+        pairs = {k: (diffs[k], masked_data[k]) for k in diffs}
+        err = np.mean([err_func(d, r) for d, r in pairs.values()])
+
+        if np.sum(eq.weights_final[:-1]) == 0:
             err /= self.penalty_coeff
         return float(err)
+
+    # def _compute_deepxde(self, eq, eq_idx, sctx):
+    #     # sctx.solution[eq_idx] = masked solution, sctx.g_fun_vals[eq_idx] =
+    #     # masked data (packed by SolverBasedFitness's deepxde branch).
+    #     masked_solution = {key: sol[..., eq_idx] for key, sol in sctx.solution.items()} # [eq_idx]
+    #     masked_data = {key: gfunc_val[..., eq_idx] for key, gfunc_val in sctx.g_fun_vals.items()}
+    #     metric = self.error_metric
+    #     # if metric == 'l2':
+    #     #     err = np.linalg.norm(masked_solution - masked_data, ord=2)
+    #     # elif metric == 'mae':
+    #     #     err = np.mean(np.abs(masked_solution - masked_data))
+    #     # else:  # 'rmse' default
+    #     #     err = np.sqrt(np.mean((masked_solution - masked_data) ** 2))
+    #
+    #     if metric == 'l2':
+    #         # ``dictSubtr`` below already forms (solution - data); subtracting
+    #         # ``masked_data`` again here double-counted it.
+    #         err_func = lambda x: np.linalg.norm(x, ord=2)
+    #     elif metric == 'mae':
+    #         err_func = lambda x: np.mean(np.abs(x))
+    #     else:  # 'rmse' default
+    #         err_func = lambda x: np.sqrt(np.mean(x**2))
+    #         # err = np.sqrt(np.mean((masked_solution - masked_data) ** 2))
+    #     err = np.mean(list(dictApplyUFunc(err_func, dictSubtr(masked_solution, masked_data)).values()))
+    #
+    #     if np.sum(eq.weights_final[:-1]) == 0:
+    #         err /= self.penalty_coeff
+    #     return float(err)
 
 class Instability(EquationObjective):
     """The instability objective, dispatching on the estimator selected by

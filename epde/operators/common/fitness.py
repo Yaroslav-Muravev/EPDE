@@ -503,12 +503,110 @@ class SolverBasedFitness(CompoundOperator):
     #     if force_out_of_place:
     #         return total_err / max(len(eqs), 1)
 
+    # def _apply_deepxde(self, objective, force_out_of_place):
+    #     # Передаём предобученную ANN в адаптер (та же логика, что и в _apply_autograd).
+    #     self.set_adapter(pretrained_net=self._pretrained_net())
+    #
+    #     samples = global_var.samples_manager
+    #     # Сетки берём через samples_manager (по траекториям), не через grid_cache.
+    #     grids = samples.grids()
+    #     masks = samples.gFunc('m')
+    #
+    #     if isinstance(objective, SoEq):
+    #         eqs = [objective.vals[v] for v in objective.vars_to_describe]
+    #     else:
+    #         eqs = [objective]
+    #
+    #     # ``evaluate`` возвращает dict по траекториям.
+    #     targets = [eq.evaluate(active_only=True)[0] for eq in eqs]
+    #
+    #     # По одной решённой траектории за вызов: DeepXDE строит одну геометрию
+    #     # из одной сетки, а филлеры индексируют sctx по ключу траектории.
+    #     solutions, per_sample_data, losses = {}, {}, []
+    #     try:
+    #         for domain_key in samples.trajecatoryIDs:
+    #             data_list = [np.asarray(target[domain_key]).reshape(-1)
+    #                          for target in targets]
+    #             solution_list, loss = self.adapter.solve(
+    #                 equation_or_system=objective,
+    #                 grids=grids[domain_key],
+    #                 data=data_list,
+    #                 domain_key=domain_key,
+    #             )
+    #
+    #             if np.isnan(loss):
+    #                 raise ValueError('NaN loss')
+    #             #flat_mask = np.asarray(masks[domain_key]).reshape(-1)
+    #             solutions[domain_key] = np.stack(
+    #                 [np.asarray(sol).reshape(-1) for sol in solution_list],
+    #                 axis = -1,
+    #             )
+    #             per_sample_data[domain_key] = np.stack(
+    #                 [np.asarray(d).reshape(-1) for d in data_list],
+    #                 axis=-1,
+    #             )
+    #             losses.append(float(loss))
+    #
+    #             for i in range(solutions[domain_key].shape[1]):
+    #                 sol_i = solutions[domain_key][:, i]
+    #                 dat_i = per_sample_data[domain_key][:, i]
+    #                 rmse = np.sqrt(np.mean((sol_i - dat_i) ** 2))
+    #                 print(f"[DEBUG] eq[{i}]: "
+    #                       f"sol=[{sol_i.min():.3f}, {sol_i.max():.3f}], "
+    #                       f"data=[{dat_i.min():.3f}, {dat_i.max():.3f}], rmse={rmse:.4f}")
+    #
+    #                 print("sol shape:", solutions[domain_key].shape,
+    #                       "data shape:", per_sample_data[domain_key].shape)
+    #                 print("sol[:5]  ", solutions[domain_key][:5, 0])
+    #                 print("dat[:5]  ", per_sample_data[domain_key][:5, 0])
+    #
+    #     except Exception as exc:
+    #         import traceback
+    #         print(f'[DEBUG] Exception: {type(exc).__name__}: {exc}')
+    #         traceback.print_exc()      # <-- ЭТО ПОКАЖЕТ ТОЧНУЮ СТРОКУ
+    #         if force_out_of_place:
+    #             return LOSS_NAN_VAL
+    #         for eq in eqs:
+    #             eq.fitness_value = LOSS_NAN_VAL
+    #             eq.fitness_calculated = True
+    #         return
+    #
+    #     # Среднее, не сумма: одинаковый по смыслу loss на разных сэмплах.
+    #     loss = float(np.mean(losses))
+    #
+    #     sw_g, data_shape = self._build_fit_context()
+    #     fit_ctx = FitContext(g_fun_vals=sw_g, data_shape=data_shape,
+    #                          penalty_coeff=self.params.get('penalty_coeff', 0.2),
+    #                          for_rps=False)
+    #
+    #     # DeepXDEError читает sctx.solution[key][eq_idx] против
+    #     # sctx.g_fun_vals[key][eq_idx] — маскированное решение против
+    #     # inner-domain данных, по траекториям.
+    #     sctx = SolverContext(solution=solutions, loss_add=loss,
+    #                          g_fun_vals=per_sample_data,
+    #                          penalty_coeff=self.params.get('penalty_coeff', 0.2),
+    #                          pinn_loss_mult=0.0)
+    #
+    #     total_err = 0.0
+    #     for eq_idx, eq in enumerate(eqs):
+    #         err = self.primary.compute(eq, eq_idx, sctx)
+    #         if force_out_of_place:
+    #             total_err += err
+    #             continue
+    #         setattr(eq, self.primary.value_attr, err)
+    #         setattr(eq, self.primary.flag_attr, True)
+    #         for filler in self.objectives:
+    #             if filler is self.primary:
+    #                 continue
+    #             setattr(eq, filler.value_attr, filler.compute(eq, fit_ctx))
+    #             setattr(eq, filler.flag_attr, True)
+    #     if force_out_of_place:
+    #         return total_err / max(len(eqs), 1)
+
     def _apply_deepxde(self, objective, force_out_of_place):
-        # Передаём предобученную ANN в адаптер (та же логика, что и в _apply_autograd).
         self.set_adapter(pretrained_net=self._pretrained_net())
 
         samples = global_var.samples_manager
-        # Сетки берём через samples_manager (по траекториям), не через grid_cache.
         grids = samples.grids()
         masks = samples.gFunc('m')
 
@@ -517,16 +615,77 @@ class SolverBasedFitness(CompoundOperator):
         else:
             eqs = [objective]
 
-        # ``evaluate`` возвращает dict по траекториям.
-        targets = [eq.evaluate(active_only=True)[0] for eq in eqs]
+        # =========================================================
+        # DEBUG 1. Что реально возвращает eq.evaluate(active_only=True)?
+        # (диагностика: eq.evaluate отдаёт RHS/du/dt, а НЕ u — использовать
+        #  его как target нельзя; здесь оставлен только как разведка)
+        # =========================================================
+        targets_eval = [eq.evaluate(active_only=True)[0] for eq in eqs]
+        print("\n[DEBUG] ===== eq.evaluate inspection (diagnostic only) =====")
+        for i, (eq, tgt) in enumerate(zip(eqs, targets_eval)):
+            name = getattr(eq, 'main_var_to_explain', None)
+            print(f"[DEBUG] eq[{i}] name={name}, target type={type(tgt).__name__}")
+            if isinstance(tgt, dict):
+                for k, v in tgt.items():
+                    v = np.asarray(v)
+                    print(f"[DEBUG]   key={k}: shape={v.shape}, "
+                          f"range=[{v.min():.4f},{v.max():.4f}], "
+                          f"mean={v.mean():.4f}, std={v.std():.4f}")
 
-        # По одной решённой траектории за вызов: DeepXDE строит одну геометрию
-        # из одной сетки, а филлеры индексируют sctx по ключу траектории.
+        # =========================================================
+        # FIX 1. targets для solver — это u, а не RHS/du/dt.
+        # samples.get((name, (1.0,))) возвращает саму переменную на внутренней
+        # области (тот же формат, что и ref в DeepXDEError).
+        # =========================================================
+        targets = [
+            samples.get((eq.main_var_to_explain, (1.0,)))
+            for eq in eqs
+        ]
+        print("\n[DEBUG] ===== samples.get inspection (correct ref data) =====")
+        for i, tgt in enumerate(targets):
+            name = getattr(eqs[i], 'main_var_to_explain', None)
+            print(f"[DEBUG] eq[{i}] name={name}, target type={type(tgt).__name__}")
+            if isinstance(tgt, dict):
+                for k, v in tgt.items():
+                    v = np.asarray(v)
+                    print(f"[DEBUG]   key={k}: shape={v.shape}, "
+                          f"range=[{v.min():.4f},{v.max():.4f}], "
+                          f"mean={v.mean():.4f}, std={v.std():.4f}")
+
+        # =========================================================
+        # DEBUG 2. Что такое masks и grids?
+        # =========================================================
+        print("\n[DEBUG] ===== masks inspection =====")
+        for k, m in masks.items():
+            m = np.asarray(m)
+            uniq = np.unique(m)
+            print(f"[DEBUG] mask[{k}]: shape={m.shape}, sum={m.sum()}, "
+                  f"dtype={m.dtype}, unique(first5)={uniq[:5]}")
+        print("[DEBUG] ===== grids inspection =====")
+        for k, g in grids.items():
+            if isinstance(g, (list, tuple)):
+                print(f"[DEBUG] grids[{k}]: {len(g)} axes, "
+                      f"shapes={[np.asarray(a).shape for a in g]}")
+            else:
+                print(f"[DEBUG] grids[{k}]: shape={np.asarray(g).shape}")
+        print(f"[DEBUG] samples.trajecatoryIDs = {list(samples.trajecatoryIDs)}")
+        print(f"[DEBUG] samples.grid_keys      = "
+              f"{getattr(samples, 'grid_keys', None)}")
+
         solutions, per_sample_data, losses = {}, {}, []
         try:
             for domain_key in samples.trajecatoryIDs:
                 data_list = [np.asarray(target[domain_key]).reshape(-1)
                              for target in targets]
+
+                # =====================================================
+                # DEBUG 3. Размеры входа adapter.solve
+                # =====================================================
+                print(f"\n[DEBUG] ===== traj {domain_key} =====")
+                for i, d in enumerate(data_list):
+                    print(f"[DEBUG]   data_list[{i}]: len={len(d)}, "
+                          f"range=[{d.min():.4f},{d.max():.4f}]")
+
                 solution_list, loss = self.adapter.solve(
                     equation_or_system=objective,
                     grids=grids[domain_key],
@@ -536,10 +695,10 @@ class SolverBasedFitness(CompoundOperator):
 
                 if np.isnan(loss):
                     raise ValueError('NaN loss')
-                #flat_mask = np.asarray(masks[domain_key]).reshape(-1)
+
                 solutions[domain_key] = np.stack(
                     [np.asarray(sol).reshape(-1) for sol in solution_list],
-                    axis = -1,
+                    axis=-1,
                 )
                 per_sample_data[domain_key] = np.stack(
                     [np.asarray(d).reshape(-1) for d in data_list],
@@ -547,18 +706,61 @@ class SolverBasedFitness(CompoundOperator):
                 )
                 losses.append(float(loss))
 
-                for i in range(solutions[domain_key].shape[1]):
-                    sol_i = solutions[domain_key][:, i]
-                    dat_i = per_sample_data[domain_key][:, i]
-                    rmse = np.sqrt(np.mean((sol_i - dat_i) ** 2))
-                    print(f"[DEBUG] eq[{i}]: "
-                          f"sol=[{sol_i.min():.3f}, {sol_i.max():.3f}], "
-                          f"data=[{dat_i.min():.3f}, {dat_i.max():.3f}], rmse={rmse:.4f}")
+                # =====================================================
+                # DEBUG 4. Форма / диапазон: sol vs data
+                # =====================================================
+                S = solutions[domain_key]
+                D = per_sample_data[domain_key]
 
+                print(f"[DEBUG] sol  shape={S.shape}  "
+                      f"range=[{S.min():.4f},{S.max():.4f}]  "
+                      f"std={S.std():.4f}")
+                print(f"[DEBUG] data shape={D.shape}  "
+                      f"range=[{D.min():.4f},{D.max():.4f}]  "
+                      f"std={D.std():.4f}")
+                if S.shape[0] != D.shape[0]:
+                    print(f"[DEBUG] *** LENGTH MISMATCH: "
+                          f"sol has {S.shape[0]}, data has {D.shape[0]}. "
+                          f"Pointwise comparison is meaningless. ***")
+                print(f"[DEBUG] sol  first8 = {S[:8, 0]}")
+                print(f"[DEBUG] data first8 = {D[:8, 0]}")
+
+                for i in range(S.shape[1]):
+                    n = min(S.shape[0], D.shape[0])
+                    sol_i = S[:n, i]
+                    dat_i = D[:n, i]
+                    rmse = np.sqrt(np.mean((sol_i - dat_i) ** 2))
+                    print(f"[DEBUG] eq[{i}] pointwise RMSE = {rmse:.4f}")
+
+                # =====================================================
+                # DEBUG 5. sorted-distribution RMSE — индикатор ordering
+                # =====================================================
+                for i in range(S.shape[1]):
+                    s_sorted = np.sort(S[:, i])
+                    d_sorted = np.sort(D[:, i])
+                    n = min(len(s_sorted), len(d_sorted))
+                    rmse_sorted = np.sqrt(
+                        np.mean((s_sorted[:n] - d_sorted[:n]) ** 2))
+                    print(f"[DEBUG] eq[{i}] sorted-distribution RMSE = "
+                          f"{rmse_sorted:.4f}  "
+                          f"(<< pointwise RMSE => ORDERING MISMATCH)")
+
+                # =====================================================
+                # DEBUG 6. Согласованность маски с длиной per_sample_data
+                # =====================================================
+                m_flat = np.asarray(masks[domain_key]).flatten()
+                print(f"[DEBUG] mask flat size={m_flat.size}, "
+                      f"sum={m_flat.sum()}, "
+                      f"per_sample_data len={D.shape[0]}")
+                if m_flat.sum() == D.shape[0]:
+                    print(f"[DEBUG] mask.sum() == len(per_sample_data): "
+                          f"per_sample_data is inner-domain (good)")
+                else:
+                    print(f"[DEBUG] *** mask.sum() != len(per_sample_data) ***")
         except Exception as exc:
             import traceback
             print(f'[DEBUG] Exception: {type(exc).__name__}: {exc}')
-            traceback.print_exc()      # <-- ЭТО ПОКАЖЕТ ТОЧНУЮ СТРОКУ
+            traceback.print_exc()
             if force_out_of_place:
                 return LOSS_NAN_VAL
             for eq in eqs:
@@ -566,7 +768,11 @@ class SolverBasedFitness(CompoundOperator):
                 eq.fitness_calculated = True
             return
 
-        # Среднее, не сумма: одинаковый по смыслу loss на разных сэмплах.
+        if len(losses) > 1:
+            print(f"[Solver2D] loss[0]={losses[0]}, loss[-1]={losses[-1]}")
+            print(f"[Solver2D] loss decrease ratio = "
+                  f"{np.mean(losses[-1]) / max(np.mean(losses[0]), 1e-12):.3e}")
+
         loss = float(np.mean(losses))
 
         sw_g, data_shape = self._build_fit_context()
@@ -574,9 +780,28 @@ class SolverBasedFitness(CompoundOperator):
                              penalty_coeff=self.params.get('penalty_coeff', 0.2),
                              for_rps=False)
 
-        # DeepXDEError читает sctx.solution[key][eq_idx] против
-        # sctx.g_fun_vals[key][eq_idx] — маскированное решение против
-        # inner-domain данных, по траекториям.
+        # =========================================================
+        # FIX 2 (ОТКАЧЕНО). Для Discrepancy(metric='deepxde') sctx.g_fun_vals
+        # — это REFERENCE DATA (u), а НЕ маска. Маска уже применена внутри
+        # Solver2D.solve при построении solutions. Передаём u как было.
+        # =========================================================
+        print("\n[DEBUG] ===== SolverContext inspection =====")
+        print(f"[DEBUG] solution keys  : {list(solutions.keys())}")
+        print(f"[DEBUG] g_fun_vals keys: {list(per_sample_data.keys())}")
+        for k in solutions:
+            s = np.asarray(solutions[k])
+            g = np.asarray(per_sample_data[k])
+            m = np.asarray(masks[k]).flatten()
+            print(f"[DEBUG] traj {k}:")
+            print(f"[DEBUG]   sol.shape={s.shape}  "
+                  f"sol.range=[{s.min():.4f},{s.max():.4f}]")
+            print(f"[DEBUG]   g  .shape={g.shape}  "
+                  f"g  .range=[{g.min():.4f},{g.max():.4f}]")
+            print(f"[DEBUG]   mask.shape={m.shape} mask.sum={m.sum()}")
+            is_binary = np.all(np.isin(np.unique(g), [0.0, 1.0]))
+            print(f"[DEBUG]   is g_fun_vals binary (mask-like)? {is_binary}  "
+                  f"<- должно быть False: для DeepXDEError это ДАННЫЕ (u)")
+
         sctx = SolverContext(solution=solutions, loss_add=loss,
                              g_fun_vals=per_sample_data,
                              penalty_coeff=self.params.get('penalty_coeff', 0.2),
@@ -585,6 +810,9 @@ class SolverBasedFitness(CompoundOperator):
         total_err = 0.0
         for eq_idx, eq in enumerate(eqs):
             err = self.primary.compute(eq, eq_idx, sctx)
+            print(f"[DEBUG] primary[{eq_idx}].compute = {err}  "
+                  f"(type={type(self.primary).__name__}, "
+                  f"metric={getattr(self.primary, 'metric', '?')})")
             if force_out_of_place:
                 total_err += err
                 continue
@@ -593,7 +821,10 @@ class SolverBasedFitness(CompoundOperator):
             for filler in self.objectives:
                 if filler is self.primary:
                     continue
-                setattr(eq, filler.value_attr, filler.compute(eq, fit_ctx))
+                val = filler.compute(eq, fit_ctx)
+                print(f"[DEBUG] filler {type(filler).__name__} -> "
+                      f"{filler.value_attr} = {val}")
+                setattr(eq, filler.value_attr, val)
                 setattr(eq, filler.flag_attr, True)
         if force_out_of_place:
             return total_err / max(len(eqs), 1)

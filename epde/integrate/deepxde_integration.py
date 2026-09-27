@@ -214,7 +214,7 @@ class Solver2D(SolverStrategy):
             data_flat = data_train.ravel()
 
             # Опционально: даунсэмплинг, чтобы не грузить обучение тысячами точек
-            max_pts = 200
+            max_pts = 1000
             if len(coords_data) > max_pts:
                 idx = np.linspace(0, len(coords_data) - 1, max_pts).astype(int)
                 x_pts = coords_data[idx]
@@ -236,14 +236,14 @@ class Solver2D(SolverStrategy):
             num_initial=adapter.num_initial,
             num_test=adapter.num_test)
 
-        # --- variance yardsticks для 2D ---
-        # --- variance yardsticks ---
+        # --- НОВОЕ: vscale с t_split_frac = adapter.train_ratio ---
         try:
             vscale = compute_variance_scale_2d(
                 u_data=data_train_list[0].reshape(-1),
                 t_all=t_train,
                 x_all=x_train,
                 t_split_frac=adapter.train_ratio,
+                rhs_func=None,  # можно передать numpy-RHS
             )
             print(f"[variance_scale_2d] vscale = {vscale}")
         except Exception as e:
@@ -257,9 +257,11 @@ class Solver2D(SolverStrategy):
         if adapter.use_adaptive_balancer and vscale is not None:
             balancer = AdaptiveLoss(
                 model,
+                optimizer=adapter.optimizer,  # 'adam'
+                lr=adapter.lr,  # 0.001
                 variance_scale=vscale,
-                weight_min=getattr(adapter, 'balancer_weight_min', None),
-                weight_max=getattr(adapter, 'balancer_weight_max', None),
+                weight_min=adapter.balancer_weight_min,
+                weight_max=adapter.balancer_weight_max,
             )
             callbacks.append(balancer)
 
