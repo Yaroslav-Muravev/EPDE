@@ -267,6 +267,7 @@ class Domain(object): # inheritance from cache objects?
         self._time_axis = time_axis
         
         self._g_func = None
+        self._g_func_val_cache = None
         self._g_func_flat_cache = None
         self._g_func_mask_cache = None        
         
@@ -343,15 +344,27 @@ class Domain(object): # inheritance from cache objects?
 
     @property
     def g_func(self) -> np.ndarray:
-        try:
-            return self._g_func(self.getGrids(mode = 'full'))
-        except TypeError:
-            assert isinstance(self._g_func, (np.ndarray, list))
-            return self._g_func
+        """The test function evaluated on the FULL grid.
+
+        Memoized like its flat and mask views below. Uncached this rebuilt the
+        whole grid-shaped field on every read -- and it is read at least twice
+        per equation per generation (once here, once through ``g_func_mask``),
+        plus once per ``g_func_masked_val`` in the coefficient fit. The setter
+        drops all three caches together, so a re-declared test function is
+        picked up exactly as before.
+        """
+        if self._g_func_val_cache is None:
+            try:
+                self._g_func_val_cache = self._g_func(self.getGrids(mode = 'full'))
+            except TypeError:
+                assert isinstance(self._g_func, (np.ndarray, list))
+                self._g_func_val_cache = self._g_func
+        return self._g_func_val_cache
 
     @g_func.setter
     def g_func(self, function: Union[Callable, np.ndarray, list]) -> None:
         self._g_func = function
+        self._g_func_val_cache = None
         self._g_func_flat_cache = None
         self._g_func_mask_cache = None
 
@@ -444,6 +457,38 @@ class Domain(object): # inheritance from cache objects?
                                         else list(boundary_width))
         self.inner_shape = np.array(shape) - 2 * np.array(self.boundary_width_per_axis)
         print(f'Set domain {self} with inner shape of {self.inner_shape}')
+
+    def validateTestFunction(self) -> None:
+        """Check the two things every downstream reshape silently assumes.
+
+        ``inner_shape`` (recorded here) and ``g_func_mask`` (which actually
+        deletes the points, ``addEntryToCache``) are one concept declared
+        twice -- see ``EpdeSearch.createDomain``. Everything that recovers grid
+        structure from the flat rows reshapes to ``inner_shape``:
+        ``chi2_scores``, ``GramSetup``, ``VaryingCoefSetup``, ``_slab_edges``.
+        If the mask is not exactly the rectangular interior box, those
+        reshapes either raise deep inside an estimator or -- worse --
+        ``chi2_scores`` silently falls back to a single flat sample-axis path
+        (``survival.py``, the ``prod(gs) != n_samples`` branch) and the second
+        Pareto objective quietly stops seeing the grid.
+
+        A CONSTANT test function cannot trip this. A user-supplied
+        ``gfunction`` can, the moment it has an interior zero or reaches zero
+        before the boundary margin -- which is exactly what the shipped-but-
+        disabled ``baseline_exp_function`` bump does at the axis extremes.
+        Fail loudly here rather than degrade there.
+        """
+        kept = int(np.count_nonzero(self.g_func_mask))
+        expected = int(np.prod(self.inner_shape))
+        if kept != expected:
+            raise ValueError(
+                f'The test function keeps {kept} points, but the declared inner '
+                f'shape {tuple(self.inner_shape)} accounts for {expected}. The '
+                'g_func mask must be exactly the rectangular interior box: every '
+                'grid-structure consumer reshapes the flat rows to inner_shape. '
+                'A g_func with interior zeros, or one reaching zero inside the '
+                f'boundary margin (boundary_width={self.boundary_width}), breaks '
+                'that contract.')
 
 
 @singledispatch

@@ -466,9 +466,45 @@ class EpdeSearch(object):
 
         domain = Domain(grids, self.grid_cache, time_axis, ID, boundary=boundary_width)
         domain.g_func = self._get_g_func(gfunction, boundary_width)
+        domain.validateTestFunction()
+        self._warn_if_grid_non_uniform(grids)
         # TODO: consider implementing domain.set_pruner()
         
         return domain.ID, domain
+
+    @staticmethod
+    def _warn_if_grid_non_uniform(grids, rtol: float = 1e-6) -> None:
+        """Warn when an axis is not uniformly sampled.
+
+        The regression measure is an INDEX-space sum: the design matrix is
+        built by flattening the interior box and the residual is summed over
+        rows with no cell-volume factor, so the fit minimises ``sum_i r_i^2``
+        rather than the integral of ``r^2``. On a stretched axis that silently
+        re-weights the objective toward wherever the mesh was refined, in
+        proportion to point count. ``SpectralDeriv`` additionally takes the
+        FIRST interval as its global spacing, so its derivatives are simply
+        wrong there.
+
+        Every benchmark grid in this tree is uniform, which is why none of
+        this has bitten -- so this is a warning, not an error: non-uniform
+        sampling is legitimate for the FD and Chebyshev schemes, which take
+        the coordinate array and handle it correctly.
+        """
+        for axis, grid in enumerate(np.atleast_1d(grids)):
+            coords = np.unique(np.asarray(grid))
+            if coords.size < 3:
+                continue
+            steps = np.diff(coords)
+            spread = float(np.ptp(steps))
+            if spread > rtol * abs(float(np.mean(steps))):
+                warnings.warn(
+                    f'Axis {axis} is not uniformly sampled (step varies by '
+                    f'{spread:.3e} about {np.mean(steps):.3e}). The least-squares '
+                    'measure is an index-space sum with no cell-volume weighting, '
+                    'so densely sampled regions dominate the fit; SpectralDeriv '
+                    'also assumes uniform spacing. Pass a quadrature weight via '
+                    'createDomain(gfunction=...) if that is not what you want.',
+                    global_var.EPDEUsageWarning, stacklevel=3)
     
     def createTrajectory(self, entries: Union[List[VariableEntry], Dict[str, np.ndarray]],
                          domain: Domain, cache_id = None,
